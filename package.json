@@ -1,0 +1,13 @@
+{
+  "name": "mahjong-soul-tingfeng",
+  "version": "4.0.0",
+  "private": true,
+  "type": "module",
+  "description": "听风执牌 v4：雀魂画面识别、听风 v70 决策与 AutoHotkey 操作",
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "start": "node resident.mjs",
+    "doctor": "node doctor.mjs",
+    "test": "node --test distribution.test.mjs"
+  }
+}

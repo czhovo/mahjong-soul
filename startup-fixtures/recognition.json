@@ -1,0 +1,212 @@
+{
+  "source": "recognition.png",
+  "labels": "Manually checked visible tiles; no opponent concealed hands",
+  "hand": "W3 W4 W5 W6 W6 W6 W8 W9 T2 T2 T4 T4 T4 W7",
+  "dora": "W4 B8 B9",
+  "selfRiver": "Z2 B2 Z3 Z5 T6 T7 B4 B4 B8 W9 W1 Z6",
+  "riverCounts": {
+    "self": 12,
+    "right": 15,
+    "opposite": 15,
+    "left": 15
+  },
+  "confirmedFields": {
+    "full": {
+      "手牌": [
+        "W3",
+        "W4",
+        "W5",
+        "W6",
+        "W6",
+        "W6",
+        "W8",
+        "W9",
+        "T2",
+        "T2",
+        "T4",
+        "T4",
+        "T4",
+        "W7"
+      ],
+      "手牌完整": true,
+      "宝牌指示牌": [
+        "W4",
+        "B8",
+        "B9"
+      ],
+      "宝牌指示牌完整": true,
+      "本方牌河": [
+        "Z2",
+        "B2",
+        "Z3",
+        "Z5",
+        "T6",
+        "T7",
+        "B4",
+        "B4",
+        "B8",
+        "W9",
+        "W1",
+        "Z6"
+      ],
+      "本方牌河完整": true,
+      "本方横置牌": [],
+      "本方副露": [],
+      "本方副露完整": true,
+      "本方点数": 24000,
+      "本方结算点数": null,
+      "下家牌河": [
+        "B6",
+        "Z3",
+        "T1",
+        "Z6",
+        "T1",
+        "B9",
+        "B1",
+        "T2",
+        "W7",
+        "Z5",
+        "B2",
+        "Z4",
+        "T2",
+        "W3",
+        "B2"
+      ],
+      "下家牌河完整": true,
+      "下家横置牌": [],
+      "下家副露": [
+        {
+          "kind": "CHI",
+          "tiles": [
+            "T8",
+            "T7",
+            "T9"
+          ],
+          "calledIndex": 0,
+          "fromRelative": "left"
+        },
+        {
+          "kind": "BUGANG",
+          "tiles": [
+            "T0",
+            "T5",
+            "T5",
+            "T5"
+          ],
+          "calledIndex": 1,
+          "fromRelative": "opposite"
+        },
+        {
+          "kind": "PENG",
+          "tiles": [
+            "B7",
+            "B7",
+            "B7"
+          ],
+          "calledIndex": 0,
+          "fromRelative": "left"
+        }
+      ],
+      "下家副露完整": true,
+      "下家点数": 24000,
+      "下家结算点数": null,
+      "对家牌河": [
+        "Z3",
+        "Z1",
+        "Z6",
+        "Z2",
+        "Z1",
+        "B1",
+        "T7",
+        "T7",
+        "T9",
+        "W7",
+        "W0",
+        "Z1",
+        "T1",
+        "T3",
+        "T8"
+      ],
+      "对家牌河完整": true,
+      "对家横置牌": [],
+      "对家副露": [
+        {
+          "kind": "ANGANG",
+          "tiles": [
+            "W2",
+            "W2",
+            "W2",
+            "W2"
+          ],
+          "calledIndex": null,
+          "fromRelative": null
+        }
+      ],
+      "对家副露完整": true,
+      "对家点数": 24000,
+      "对家结算点数": null,
+      "上家牌河": [
+        "W3",
+        "Z5",
+        "W9",
+        "Z3",
+        "W9",
+        "T6",
+        "B5",
+        "B3",
+        "B2",
+        "B3",
+        "W4",
+        "Z2",
+        "B1",
+        "B1",
+        "T4"
+      ],
+      "上家牌河完整": true,
+      "上家横置牌": [],
+      "上家副露": [],
+      "上家副露完整": true,
+      "上家点数": 27000,
+      "上家结算点数": null,
+      "场风": 0,
+      "局数": 1,
+      "本场": 1,
+      "供托": 1,
+      "剩余牌山": 10,
+      "座位验证": true,
+      "四家自风": {
+        "self": 1,
+        "right": 2,
+        "opposite": 3,
+        "left": 0
+      },
+      "庄家": "left",
+      "行动方": "self",
+      "操作按钮": [
+        "HU",
+        "LIZHI",
+        "PASS",
+        "TSUMO"
+      ],
+      "自动和牌验证": true,
+      "自动和牌开启": false,
+      "计时验证": true,
+      "长考秒数": 14,
+      "操作秒数": 4,
+      "结果页": null,
+      "桌面点数完整": true,
+      "结算点数完整": false,
+      "终局阶段": "unknown",
+      "终局按钮": []
+    },
+    "probe": {
+      "开局页面": null,
+      "开局按钮": []
+    },
+    "riichi": {
+      "立直选牌验证": false,
+      "立直合法弃牌": []
+    }
+  },
+  "confirmation": "用户于2026-10-30确认展示表内识别项目全部正确；不包含未运行的吃碰选择专项。"
+}

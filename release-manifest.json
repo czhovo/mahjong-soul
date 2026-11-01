@@ -1,0 +1,23 @@
+{
+  "repository": "czhovo/mahjong-soul",
+  "tag": "v4.0.0-v70",
+  "engines": [
+    {
+      "version": "v70-parallel-3p3",
+      "asset": "tingfeng-v70-parallel-3p3-windows-x64.zip",
+      "sha256": "b7fe6e0ffb4fb9e4bd629d3db5724cce03a0d517b993253e46e22b394837ba89",
+      "archive_sha256": "4ec64f458f4ca578e8b90ecfe5c9b7025ba57aaa0a319268b733b57093f5b309"
+    },
+    {
+      "version": "v70-parallel-1p7",
+      "asset": "tingfeng-v70-parallel-1p7-windows-x64.zip",
+      "sha256": "0573dc4a1738846978d16f36a4257ce851dbed2478611e287e427c0674b0084a",
+      "archive_sha256": "d4f22918f36622c73b85e26d108a07f899ada26309549af161dd4b2414dc8fd1"
+    }
+  ],
+  "autohotkey": {
+    "version": "2.0.30",
+    "url": "https://github.com/AutoHotkey/AutoHotkey/releases/download/v2.0.30/AutoHotkey_2.0.30.zip",
+    "sha256": "1e0ece7ecb2d5646e55758150472677996a57f9db5c83d2996d8b47b9e2f31a4"
+  }
+}
