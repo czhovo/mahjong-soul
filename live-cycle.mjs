@@ -1,7 +1,7 @@
 import {AutoWin} from './auto-win.mjs';
 import {declaredSeats} from './confirmed-riichi.mjs';
 import {appendEvidence} from './background-evidence.mjs';
-import {currentDecision,newDiscardEvidence,ReactionObservationCache} from './current-decision.mjs';
+import {currentDecision,newDiscardEvidence,ReactionObservationCache,promptDiscard} from './current-decision.mjs';
 import {applyPublicEvent} from './hand-ledger.mjs';
 import {ordinarySpan} from './ordinary-span.mjs';
 import {verifyDiscard,verifyLocalDiscard,verifyCalledDiscard,replacedDiscard,discardLeftHand} from './discard-verification.mjs';
@@ -18,7 +18,7 @@ import {repairAnchorEvidence,completeDecodedRivers} from './anchor-evidence.mjs'
 import {chainedCallSpan} from './chained-call-span.mjs';
 import {verifyKongDraw} from './kong-transition.mjs';
 import {verifyWinSettlement} from './win-settlement.mjs';
-import {sameReactionWindow} from './reaction-window.mjs';
+import {sameReactionWindow,samePassPrompt} from './reaction-window.mjs';
 import {changedRound,roundIdentity} from './round-boundary.mjs';
 import {SettlementCollector,SETTLEMENT_STABLE_MS} from './passive-settlement.mjs';
 import {openingPrefix} from './opening-prefix.mjs';
@@ -110,6 +110,11 @@ export class LiveCycle {
     }
   }
   async repairIdleHistory(frame,reason){
+    if(this.frame?.id===frame.id&&Object.values(this.frame.opponent_melds??{}).some(m=>m.tracking?.reason==='previously visible meld omitted')){
+      frame={...frame,opponent_melds:{...frame.opponent_melds}};
+      for(const [p,m] of Object.entries(this.frame.opponent_melds))
+        if(m.tracking?.reason==='previously visible meld omitted')frame.opponent_melds[p]=m;
+    }
     if(!this.callRiverPlayers)this.observeCallRivers(this.anchor.before);
     this.observeCallRivers(frame);
     const session=this.session;
@@ -118,6 +123,20 @@ export class LiveCycle {
     const previous=this.publicFrame??this.anchor.before;
     const positions=['self','right','opposite','left'];
     const meldKey=f=>JSON.stringify(positions.map(p=>(p==='self'?f.own_melds?.groups:f.opponent_melds?.[p]?.groups)?.map(g=>[g.kind,g.tiles,g.calledIndex,g.fromRelative])));
+    // The confirmed click may have removed our tile before its river face
+    // appeared. This is still the same discard, not a broken history.
+    const action=!this.publicFrame&&/^(?:PLAY|LIZHI) (\S+)$/.exec(this.anchor?.decision?.output?.response??'');
+    if(action&&previous?.hand?.complete&&frame.hand?.complete&&!changedRound(previous,frame)){
+      const hand=previous.hand.tiles.map(t=>t.tile),i=hand.indexOf(action[1]);
+      if(i>=0)hand.splice(i,1);
+      const old=previous.rivers?.self,next=frame.rivers?.self;
+      if(i>=0&&old?.complete&&next?.complete&&old.tiles.length===next.tiles.length&&
+         old.tiles.every((t,j)=>t.tile===next.tiles[j].tile&&t.sideways===next.tiles[j].sideways)&&
+         hand.sort().join(' ')===frame.hand.tiles.map(t=>t.tile).sort().join(' ')&&
+         meldKey(previous)===meldKey(frame)){
+        this.idleRepairCandidate=null;return false;
+      }
+    }
     if(previous&&meldKey(previous)===meldKey(frame)&&positions.some(p=>
       (frame.rivers?.[p]?.tiles?.length??0)<(previous.rivers?.[p]?.tiles?.length??0))){
       this.idleRepairCandidate=null;return false;
@@ -157,12 +176,13 @@ export class LiveCycle {
     this.idleRepairCandidate={signature,id:frame.id};
     if(!prior||prior.signature!==signature||prior.id===frame.id||this.lastIdleRepairSignature===signature)return false;
     let snapshot;
-    try{snapshot=snapshotRecovery(structuredClone(frame),{previous:this.publicFrame??this.anchor.before,history:session.requests});}
+    const recoveredFrame=structuredClone(frame);
+    try{snapshot=snapshotRecovery(recoveredFrame,{previous:this.publicFrame??this.anchor.before,history:session.requests});}
     catch{return false;}
     if(snapshot.event)return false;
     session.restoreSnapshot(snapshot);
     const screenshot=await this.preserveRebuildFrame(frame,reason,'idle_history_repaired');
-    this.publicFrame=structuredClone(frame);this.consumed=[];this.opening=null;this.openingConsumed=[];this.snapshotEvent=null;
+    this.publicFrame=recoveredFrame;this.consumed=[];this.opening=null;this.openingConsumed=[];this.snapshotEvent=null;
     this.riverObservations=new RiverObservationCache();this.riverObservations.apply(frame);
     this.meldObservations=new MeldObservationCache();this.meldObservations.apply(frame);
     this.reactionObservations=new ReactionObservationCache();this.reactionObservations.observe(frame);
@@ -427,7 +447,9 @@ export class LiveCycle {
     this.lastDecisionObservation=structuredClone(frame);
     this.reactionObservations??=new ReactionObservationCache();
     const reactionEvidence=this.reactionObservations.observe(frame)??newDiscardEvidence(recentObservation,frame);
-    if(reactionEvidence)this.reactionEvidence=reactionEvidence;
+    const visiblePrompt=promptDiscard(frame);
+    if(reactionEvidence&&(!frame.controls?.CHI||reactionEvidence.position==='left'))this.reactionEvidence=reactionEvidence;
+    else if(visiblePrompt)this.reactionEvidence=visiblePrompt;
     else if((recentObservation?.controls?.PASS&&!frame.controls?.PASS)||
       frame.hand?.tiles?.length===14-3*(frame.own_melds?.groups?.length??0)||
       JSON.stringify(this.reactionEvidence?.round)!==JSON.stringify(roundIdentity(frame)))this.reactionEvidence=null;
@@ -482,7 +504,7 @@ export class LiveCycle {
           if(!progressed){
             p.firstUnconfirmedAt??=performance.now();
             if(performance.now()-(p.lastRetryAt??p.started)<800)return {status:'waiting_pass_effect'};
-            if(raw.id!==p.lastRetryFrame&&sameReactionWindow(p.before,raw)&&
+            if(raw.id!==p.lastRetryFrame&&samePassPrompt(p.before,raw,p.decision.input?.requests?.at(-1))&&
                (!Number.isFinite(raw.captureStartedMono)||raw.captureStartedMono>=(p.lastRetryAt??p.started))){
               const receipt=await adapter.pass({...p.decision,observationId:raw.id},raw);
               p.lastRetryAt=performance.now();p.lastRetryFrame=raw.id;
@@ -659,6 +681,10 @@ export class LiveCycle {
         span=current;publicMode=true;this.opening=null;this.openingConsumed=[];
       }
       const outstanding=this.opening?span.requests.slice((this.openingConsumed??[]).length):publicMode?span.requests:span.requests.slice(this.consumed.length);
+      const prompt=visiblePrompt&&(reactionEvidence&&(!frame.controls.CHI||reactionEvidence.position==='left')?reactionEvidence:visiblePrompt),last=(outstanding.at(-1)??session.requests?.at(-1))?.state?.split(' ');
+      if(prompt&&(!last||last[0]!=='3'||Number(last[1])!==prompt.round.seats[prompt.position]||
+         !['PLAY','LIZHI','CHI','PENG'].includes(last[2])||last.at(-1)!==prompt.tile))
+       throw Error('Visible call prompt belongs to a different discard');
       // Delayed controls are independent of the history path (including the
       // opening prefix). Reuse the committed event rather than rebuilding it.
       if(frame.controls?.PASS&&!outstanding.length){
@@ -693,7 +719,7 @@ export class LiveCycle {
     }
     const all=span.requests;
     const remaining=this.opening?all.slice((this.openingConsumed??[]).length):publicMode?all:all.slice(this.consumed.length);
-    if(!remaining.length)return {status:'observing'};
+    if(!remaining.length){if(publicMode&&span.alignSnapshotRiver)this.publicFrame=frame;return {status:'observing'};}
     if(!span.reuseObserved)await this.reportVisibleEvents({...span,requests:remaining},frame,publicMode);
     const event=remaining.at(-1),own=event.state.startsWith('2 ');
     if(span.reuseObserved&&this.lastReactionKey===`${session.requests?.length}:${event.state}`)return {status:'observing'};

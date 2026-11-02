@@ -9,7 +9,7 @@ export class ConstraintHandChanges {
  add(position,tile,count){const e={sequence:++this.sequence,position,tile:norm(tile),count};this.journal.push(e);return e;}
  observe(frame){
   const invalid=new Set();
-  for(const position of ['opposite','right']){
+  for(const position of ['left','opposite','right']){
    const p=this.players[position]??={river:null,melds:null};
    const river=frame.rivers?.[position];
    if(river?.complete){

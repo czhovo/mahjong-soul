@@ -129,8 +129,21 @@ export class MeldObservationCache {
   let out=raw;
   for(const p of ['right','opposite','left']){
    const group=raw.opponent_melds?.[p],faces=raw.opponent_meld_faces?.[p];
-   if(group?.complete&&faces?.complete){this.sources.set(p,{id:raw.id,group:structuredClone(group),faces:structuredClone(faces)});continue;}
    const old=this.sources.get(p);
+   if(group?.complete&&faces?.complete){
+    const key=g=>JSON.stringify([g.kind,g.tiles,g.calledIndex,g.fromRelative]);
+    const previous=old?.group.groups??[],keys=previous.map(key);
+    const matches=g=>previous.some(o=>key(o)===key(g)||(!o.estimated&&g.estimated&&g.kind==='ANGANG'&&
+     ['PENG','GANG','BUGANG'].includes(o.kind)&&o.tiles.every(t=>t===g.tiles[0])));
+    if(group.groups.length<=previous.length&&group.groups.every(matches)&&previous.every(g=>!g.estimated)&&
+       (group.groups.length<previous.length||group.groups.some(g=>!keys.includes(key(g))))){
+     // An exposed set cannot leave the table within one hand.
+     if(out===raw)out=structuredClone(raw);
+     out.opponent_melds[p]={...structuredClone(old.group),tracking:{source:old.id,reason:'previously visible meld omitted'}};
+     continue;
+    }
+    this.sources.set(p,{id:raw.id,group:structuredClone(group),faces:structuredClone(faces)});continue;
+   }
    if(old&&faces&&!faces.tiles.length&&!faces.rejected?.length&&faces.face_boxes?.length>0&&faces.face_boxes.every(b=>b[2]>b[3]*2.5)){
     // A positively detected overlay may retain history, but never supplies a
     // fresh call event. Empty geometry is not evidence of an overlay.

@@ -1,11 +1,31 @@
 import {assertVisibleHand} from './hand-ledger.mjs';
 import {roundIdentity} from './round-boundary.mjs';
+import {callCombinations} from './planned-call-choice.mjs';
 
 const meldEvidence=frame=>Object.fromEntries(['self','right','opposite','left'].map(p=>{
  const m=p==='self'?frame.own_melds:frame.opponent_melds?.[p];
  return [p,m?.complete?JSON.stringify(m.groups.map(g=>JSON.stringify([g.kind,[...g.tiles].sort(),g.fromRelative,g.tiles[g.calledIndex]])).sort()):null];
 }));
 const changedMeldEvidence=(a,b)=>Object.keys(a).some(p=>a[p]!==null&&b[p]!==null&&a[p]!==b[p]);
+
+// CHI fixes the source even during the dark part of the turn lamp. For PENG
+// use the lit opponent; never select a player just because their tail matches.
+export function promptDiscard(frame){
+ const c=frame.controls,round=roundIdentity(frame);
+ if(!round||!c?.PASS||(!c.CHI&&!c.PENG)||!frame.hand?.complete)return null;
+ const lit=frame.round.turn?.position,position=c.CHI?'left':lit;
+ if(!['left','opposite','right'].includes(position)||(lit&&lit!==position))return null;
+ const r=frame.rivers?.[position],t=r?.tiles?.at(-1);
+ if(!t?.color?.verified||t.tracking||typeof t.sideways!=='boolean')return null;
+ // A rejected old identity does not obscure the last discard if every
+ // occupied outline is accounted for by a decoded tile.
+ if(!r.complete&&(!r.face_boxes?.length||r.face_count!==r.tiles.length||
+    !r.face_boxes.every(([x,y,w,h])=>r.tiles.some(v=>v.center&&v.center[0]>=x-2&&v.center[0]<=x+w+2&&v.center[1]>=y-2&&v.center[1]<=y+h+2))))return null;
+ const hand=frame.hand.tiles.map(v=>v.tile);
+ if(['CHI','PENG'].some(k=>c[k]&&!callCombinations(hand,k,t.tile).length))return null;
+ return {round,position,slot:r.tiles.length-1,tile:t.tile,sideways:t.sideways,melds:meldEvidence(frame),
+  event:{state:`3 ${round.seats[position]} ${t.sideways?'LIZHI':'PLAY'} ${t.tile}`,validact:null}};
+}
 
 // Keep the last complete prefix for each river across unread animation frames.
 // A complete shrink (called-away tile) replaces the prefix; never carry it
@@ -14,19 +34,32 @@ export class ReactionObservationCache {
  observe(frame){
   const round=roundIdentity(frame),key=JSON.stringify(round);
   if(!round)return null;
-  if(this.key!==key){this.key=key;this.before=null;}
+  if(this.key!==key){this.key=key;this.before=null;this.priorMelds={};}
   const evidence=newDiscardEvidence(this.before,frame);
   if(!this.before)this.before={round:structuredClone(frame.round),rivers:{}};
-  for(const p of ['right','opposite','left'])if(frame.rivers?.[p]?.complete)this.before.rivers[p]=structuredClone(frame.rivers[p]);
+  const seats=['self','right','opposite','left'],groups=p=>p==='self'?frame.own_melds:frame.opponent_melds?.[p];
+  const signature=g=>JSON.stringify([g.kind,g.tiles,g.calledIndex,g.fromRelative]);
+  for(const p of seats.slice(1)){
+   const old=this.before.rivers[p],r=frame.rivers?.[p];if(!r?.complete)continue;
+   if(old&&r.tiles.length<old.tiles.length){
+    const taken=old.tiles.length===r.tiles.length+1&&r.tiles.every((t,i)=>old.tiles[i].tile===t.tile)&&seats.some((owner,i)=>
+     groups(owner)?.complete&&groups(owner).groups.some(g=>['CHI','PENG','GANG'].includes(g.kind)&&
+      seats[(i+({left:3,opposite:2,right:1}[g.fromRelative]))%4]===p&&g.tiles?.[g.calledIndex]===old.tiles.at(-1).tile&&
+      this.priorMelds[owner]&&!this.priorMelds[owner].includes(signature(g))));
+    if(!taken)continue;
+   }
+   this.before.rivers[p]=structuredClone(r);
+  }
+  for(const owner of seats)if(groups(owner)?.complete)this.priorMelds[owner]=groups(owner).groups.map(signature);
   return evidence;
  }
 }
 
-export function newDiscardEvidence(recent,frame){
+export function newDiscardEvidence(recent,frame,{includeSelf=false}={}){
  const round=roundIdentity(frame);
  if(!round||!recent||JSON.stringify(roundIdentity(recent))!==JSON.stringify(round))return null;
  const additions=[];
- for(const p of ['right','opposite','left']){
+ for(const p of (includeSelf?['self','right','opposite','left']:['right','opposite','left'])){
   const a=recent.rivers?.[p],b=frame.rivers?.[p];
   if(!a?.complete||!b||a.tiles.some((t,i)=>t.tile!==b.tiles[i]?.tile)||b.tiles.length<a.tiles.length)continue;
   for(const [i,t] of b.tiles.slice(a.tiles.length).entries())additions.push({p,t,slot:a.tiles.length+i});
@@ -71,8 +104,9 @@ export function currentDecision(session,before,frame,recent,{consumed=[],publicM
  }
  if(frame.controls?.PASS){
   try{assertVisibleHand(session.ledger,visible);}catch{return null;}
-  const evidence=newDiscardEvidence(recent,frame)??reactionEvidence;
-  if(evidence&&JSON.stringify(evidence.round)===JSON.stringify(round)&&
+  const fresh=newDiscardEvidence(recent,frame);
+  const evidence=(fresh&&(!frame.controls.CHI||fresh.position==='left')?fresh:null)??promptDiscard(frame)??reactionEvidence;
+  if(evidence&&(!frame.controls.CHI||evidence.position==='left')&&JSON.stringify(evidence.round)===JSON.stringify(round)&&
      !changedMeldEvidence(evidence.melds??{},meldEvidence(frame))){
    const river=frame.rivers?.[evidence.position],t=river?.tiles?.[evidence.slot];
    if(river?.tiles.length===evidence.slot+1&&t?.tile===evidence.tile&&t.sideways===evidence.sideways&&t.color?.verified&&!t.tracking){
@@ -86,6 +120,7 @@ export function currentDecision(session,before,frame,recent,{consumed=[],publicM
   if(!/^3 [0-3] (PLAY|LIZHI|CHI|PENG|BUGANG) /.test(event?.state??''))return null;
   const seat=Number(event.state.split(' ')[1]);
   const p=Object.keys(round.seats).find(p=>round.seats[p]===seat);
+  if(frame.controls.CHI&&p!=='left')return null;
   const previous=before.rivers?.[p],next=frame.rivers?.[p];
   if(!previous?.complete||!next?.complete||JSON.stringify(previous.tiles.map(t=>t.tile))!==JSON.stringify(next.tiles.map(t=>t.tile)))return null;
   try{assertVisibleHand(session.ledger,visible);}catch{return null;}

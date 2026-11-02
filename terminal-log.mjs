@@ -16,7 +16,7 @@ export function tileName(value){
 }
 const tiles=a=>Array.isArray(a)?a.map(tileName).join(' '):'未识别';
 export function callWaitNotice(event){
- return `鸣牌推断：对家或下家有≥2张${tileName(event.tile)}`;
+ return `鸣牌推断：${(event.candidate_positions??['opposite','right']).map(p=>positions[p]).join('或')}有≥2张${tileName(event.tile)}`;
 }
 export function actionName(value=''){
  const [kind,...args]=value.trim().split(/\s+/);
@@ -252,6 +252,11 @@ export class TerminalLog{
  }
 
  callWaitConfirmed(event){
+  if(event.discard.seat===this.selfSeat){
+   this.line(eventName({state:`3 ${event.discard.seat} PLAY ${event.discard.tile}`}));
+   this.line(callWaitNotice(event));
+   return;
+  }
   this.callWaitNotices??=new Map();
   this.callWaitNotices.set(`${event.discard.seat}:${event.discard.river_index}`,event);
  }
@@ -271,7 +276,7 @@ export class TerminalLog{
   let blocked=false;
   this.pendingDiscardModes=this.pendingDiscardModes.filter(p=>{
    if(blocked)return true;
-   if(p.position==='left'&&this.callWaitPending?.slot===p.index){blocked=true;return true;}
+   if(p.position===this.callWaitPending?.position&&this.callWaitPending?.slot===p.index){blocked=true;return true;}
    const tile=frame.rivers?.[p.position]?.tiles?.[p.index];
    if(tile?.tile===p.tile&&tile.discardMode&&!tile.discardEvidence?.inferred){
     this.discardLine({...p.event,discardMode:tile.discardMode,discardModeInferred:false},p.index);return false;
@@ -285,8 +290,9 @@ export class TerminalLog{
   if(type!=='3'||!['PLAY','LIZHI'].includes(kind))return;
   const f=this.scoreFrame,position=Object.keys(f?.round?.seat_identity?.seats??{}).find(p=>f.round.seat_identity.seats[p]===Number(seat));
   const ts=f?.rivers?.[position]?.tiles??[],index=ts.findLastIndex(t=>t.tile===tile);
-  if(position==='self'||index<0)return;
-  const waiting=position==='left'&&(this.callWaitPending?.slot===index||this.callWaitNotices?.has(`${seat}:${index}`));
+  if(index<0)return;
+  const waiting=(position===this.callWaitPending?.position&&this.callWaitPending?.slot===index)||this.callWaitNotices?.has(`${seat}:${index}`);
+  if(position==='self'&&!waiting)return;
   if(!waiting&&event.discardMode&&!event.discardModeInferred&&!this.pendingDiscardModes?.length)return;
   this.pendingDiscardModes??=[];
   if(!Number.isFinite(f.capturedAt))return false;

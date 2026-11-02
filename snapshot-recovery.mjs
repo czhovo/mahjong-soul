@@ -42,6 +42,7 @@ export function snapshotRecovery(frame,{previous=null,history=[]}={}){
   extraAssumptions.push('余牌暂未读清，按可见牌估计并同步衔接基准');
  }
  let event=own?{state:`2 ${hand.at(-1)}`,validact:null}:null;
+ const boundaryRivers=Object.fromEntries(positions.map(p=>[p,rivers[p].map(t=>[t.tile,!!t.sideways])]));
  const ordered=exactNoCallOrder(frame,rivers,remaining,own);
  if(!own&&frame.controls?.PASS){
   const candidates=positions.filter(p=>p!=='self'&&rivers[p].length);
@@ -62,7 +63,7 @@ export function snapshotRecovery(frame,{previous=null,history=[]}={}){
   requests.push(...ordered);
   const initialHand=own?hand.slice(0,-1):hand;
   requests.push({handTiles:`1 ${initialHand.join(' ')}`,doraIndicators:frame.dora.tiles.map(t=>t.tile).join(' '),validact:null});
-  return {requests:preserveRiichi(history,requests),event,seat:r.seats.self,hand:initialHand,frameId:frame.id,estimated:true,chronologyCertain:true,
+  return {requests:preserveRiichi(history,requests),event,seat:r.seats.self,hand:initialHand,frameId:frame.id,boundaryRivers,estimated:true,chronologyCertain:true,
    assumptions:['无副露，按各家累计弃牌序号和座次恢复确定顺序；余牌数已核对','保留已有弃牌记录；未知摸切标记仍按手切']};
  }
  // Place calls early and use each caller's earliest remaining visible discard.
@@ -90,6 +91,6 @@ export function snapshotRecovery(frame,{previous=null,history=[]}={}){
  for(let i=0;i<70-remaining-(own?1:0);i++)emit(i%4,'DRAW');
  const initialHand=own?hand.slice(0,-1):hand;
  requests.push({handTiles:`1 ${initialHand.join(' ')}`,doraIndicators:frame.dora.tiles.map(t=>t.tile).join(' '),validact:null});
- return {requests:preserveRiichi(history,requests),event,seat:r.seats.self,hand:initialHand,frameId:frame.id,
+ return {requests:preserveRiichi(history,requests),event,seat:r.seats.self,hand:initialHand,frameId:frame.id,boundaryRivers,
   estimated:true,assumptions:[...extraAssumptions,'跨玩家动作顺序按座次交错估计','鸣牌时点前置；加杠按明杠恢复','历史摸牌归属均分估计；摸切标记按手切','未识别的旧弃牌暂不计入可见牌；反应对象按当前轮转和牌河估计','已放过的和牌机会未知；仅执行当前界面允许的动作']};
 }

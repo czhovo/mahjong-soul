@@ -41,6 +41,7 @@ export class TingfengSession {
       const tile=['PLAY','LIZHI'].includes(w[2])?w[3]:['CHI','PENG'].includes(w[2])?w[6]:null;
       if(tile){this.ledger.lastPlayer=Number(w[1]);this.ledger.lastDiscard=tile;}
     }
+    this.snapshotBoundary={id:snapshot.frameId,actorCertain:snapshot.chronologyCertain===true,river:snapshot.boundaryRivers};
     this.estimatedHistory={frameId:snapshot.frameId,assumptions:snapshot.assumptions};
   }
   observeVerified(transition,visibleHand) {
