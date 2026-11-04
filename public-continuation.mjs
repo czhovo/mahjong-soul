@@ -1,3 +1,4 @@
+import {addedKongTransition} from './added-kong-transition.mjs';
 import {publicEvents} from './public-events.mjs';
 import {canonicalMelds,callEvent} from './meld-events.mjs';
 import {reactionSpan} from './reaction-span.mjs';
@@ -56,6 +57,8 @@ export function publicContinuation(before,after,session){
  if(session.pending?.output?.response==='PASS'&&session.pending.ledger&&session.pending.input?.requests){
   session={...session,ledger:session.pending.ledger,requests:session.pending.input.requests};
  }
+ const addedKong=addedKongTransition(before,after,session);
+ if(addedKong)return addedKong;
  const seats=after.round.seat_identity.seats;
  const changes=[];
  for(const p of ['right','opposite','left']){

@@ -1,3 +1,4 @@
+import {roundIdentity} from './round-boundary.mjs';
 const positions=['right','opposite','left'];
 const allPositions=['self',...positions];
 const meldKey=g=>JSON.stringify([g.kind,[...g.tiles].sort(),g.fromRelative??null,g.calledIndex??null]);
@@ -12,7 +13,7 @@ export class VisibleEventLog {
  constructor(frame){this.reset(frame);}
  reset(frame){this.doraRound=key(frame??{});this.indicators=frame?.dora?.complete&&!frame.dora.rejected?.length?frame.dora.tiles.map(t=>t.tile):null;this.callSources=new Map();this.callGroups={};for(const p of allPositions){const m=p==='self'?frame?.own_melds:frame?.opponent_melds?.[p];this.callGroups[p]=m?.complete?structuredClone(m.groups):null;}this.round=key(frame??{});this.players={};for(const p of allPositions){const r=frame?.rivers?.[p],m=p==='self'?frame?.own_melds:frame?.opponent_melds?.[p];this.players[p]={slots:slots(r),ready:!!r?.complete,groups:m?.complete?structuredClone(m.groups):null};}}
  observe(frame,{includeSelf=false}={}){
-  if(!frame.round?.seat_identity?.verified)return [];
+  if(!roundIdentity(frame))return [];
   if(this.round!==key(frame)){this.reset(frame);return [];}
   // Record independently visible new calls before inspecting any river, so
   // owner/source iteration order cannot authorize or suppress a removal.

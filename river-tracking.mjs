@@ -1,3 +1,4 @@
+import {roundIdentity} from './round-boundary.mjs';
 // Preserve identities of already observed immutable river tiles when an overlay
 // hides a marker. This is temporal tracking, explicitly not fresh recognition.
 export class RiverObservationCache {
@@ -120,44 +121,53 @@ export function verifiedMarkerExtension(old,next){
  return true;
 }
 
+// Confirmed melds are monotone within a hand, including our own melds.
+// Pixel completeness is not a precondition for retaining confirmed history.
 export class MeldObservationCache {
  constructor(){this.round=null;this.sources=new Map();}
  apply(raw){
-  const r=raw.round;if(!r?.seat_identity?.verified)return raw;
-  const identity=JSON.stringify([r.wind,r.hand_number?.value,r.counters?.honba,r.seat_identity.seats]);
-  if(identity!==this.round){this.round=identity;this.sources.clear();}
+  const identity=roundIdentity(raw);if(!identity)return raw;
+  const key=JSON.stringify(identity);
+  if(key!==this.round){this.round=key;this.sources.clear();}
   let out=raw;
-  for(const p of ['right','opposite','left']){
-   const group=raw.opponent_melds?.[p],faces=raw.opponent_meld_faces?.[p];
+  const norm=t=>t.replace(/0$/,'5');
+  const same=(a,b)=>a.kind===b.kind&&a.fromRelative===b.fromRelative&&a.calledIndex===b.calledIndex&&
+   [...a.tiles].sort().join(' ')===[...b.tiles].sort().join(' ');
+  const kong=(a,b)=>a.kind==='PENG'&&['BUGANG','GANG'].includes(b.kind)&&
+   a.fromRelative===b.fromRelative&&a.calledIndex===b.calledIndex&&b.tiles.length===4&&
+   a.tiles.every(t=>norm(t)===norm(b.tiles[0]))&&b.tiles.every(t=>norm(t)===norm(a.tiles[0]));
+  const overlap=(a,b)=>a.centers?.some(c=>b.centers?.some(d=>Math.hypot(c[0]-d[0],c[1]-d[1])<12));
+  for(const p of ['self','right','opposite','left']){
+   const group=p==='self'?raw.own_melds:raw.opponent_melds?.[p];
    const old=this.sources.get(p);
-   if(group?.complete&&faces?.complete){
-    const key=g=>JSON.stringify([g.kind,g.tiles,g.calledIndex,g.fromRelative]);
-    const previous=old?.group.groups??[],keys=previous.map(key);
-    const matches=g=>previous.some(o=>key(o)===key(g)||(!o.estimated&&g.estimated&&g.kind==='ANGANG'&&
-     ['PENG','GANG','BUGANG'].includes(o.kind)&&o.tiles.every(t=>t===g.tiles[0])));
-    if(group.groups.length<=previous.length&&group.groups.every(matches)&&previous.every(g=>!g.estimated)&&
-       (group.groups.length<previous.length||group.groups.some(g=>!keys.includes(key(g))))){
-     // An exposed set cannot leave the table within one hand.
-     if(out===raw)out=structuredClone(raw);
-     out.opponent_melds[p]={...structuredClone(old.group),tracking:{source:old.id,reason:'previously visible meld omitted'}};
-     continue;
-    }
-    this.sources.set(p,{id:raw.id,group:structuredClone(group),faces:structuredClone(faces)});continue;
-   }
-   if(old&&faces&&!faces.tiles.length&&!faces.rejected?.length&&faces.face_boxes?.length>0&&faces.face_boxes.every(b=>b[2]>b[3]*2.5)){
-    // A positively detected overlay may retain history, but never supplies a
-    // fresh call event. Empty geometry is not evidence of an overlay.
-    if(out===raw)out=structuredClone(raw);
-    out.opponent_melds[p]={...structuredClone(old.group),tracking:{source:old.id,reason:'occluded; retaining history only'}};
+   // Never promote an inferred concealed kong or retained pixels to a new
+   // confirmed meld. Fresh exact groups can still extend known history.
+   const fresh=group?.complete&&!group.tracking?(group.groups??[]).filter(g=>!g.estimated&&!g.tracking):[];
+   if(!old){
+    if(group?.complete&&!group.tracking&&fresh.length===(group.groups??[]).length)
+     this.sources.set(p,{id:raw.id,groups:structuredClone(fresh)});
     continue;
    }
-   if(!old||!faces||faces.rejected?.length||faces.face_count!==old.faces.face_count||!faces.face_boxes?.length)continue;
-   const near=(a,b)=>Math.hypot(a.center[0]-b.center[0],a.center[1]-b.center[1])<6;
-   if(!faces.tiles.length||faces.tiles.some(t=>!old.faces.tiles.some(v=>near(t,v)&&t.tile===v.tile)))continue;
-   const inside=(t,b)=>t.center[0]>=b[0]&&t.center[0]<=b[0]+b[2]&&t.center[1]>=b[1]&&t.center[1]<=b[1]+b[3];
-   if(faces.face_boxes.some(b=>old.faces.tiles.filter(t=>inside(t,b)).length!==1)||old.faces.tiles.some(t=>!faces.face_boxes.some(b=>inside(t,b))))continue;
+   const rest=[...fresh],groups=[];
+   for(const known of old.groups){
+    let i=rest.findIndex(g=>same(known,g)||kong(known,g));
+    if(i>=0)groups.push(rest.splice(i,1)[0]);
+    else groups.push(known);
+   }
+   for(const g of rest)if(!groups.some(o=>same(o,g)||kong(g,o)||overlap(o,g))&&groups.length<4)groups.push(g);
+   const retained=old.groups.some(g=>!fresh.some(n=>same(g,n)||kong(g,n)));
+   const complete=group?.complete&&groups.length===(group.groups??[]).length&&groups.every(g=>group.groups.some(n=>same(g,n)));
+   this.sources.set(p,{id:raw.id,groups:structuredClone(groups)});
+   if(complete)continue;
+   // With no prior melds an unread band might contain a NEW call: do not
+   // declare it empty. With known melds, preserve them while new faces retry.
+   if(!groups.length)continue;
    if(out===raw)out=structuredClone(raw);
-   out.opponent_melds[p]={...structuredClone(old.group),tracking:{source:old.id,reason:'unchanged occupied meld faces'}};
+   const merged={...group,complete:true,groups:structuredClone(groups),reason:null,
+    historyRetained:retained,recognitionComplete:group?.complete===true};
+   delete merged.tracking;
+   if(p==='self')out.own_melds=merged;
+   else {out.opponent_melds??={};out.opponent_melds[p]=merged;}
   }
   return out;
  }

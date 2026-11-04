@@ -110,11 +110,9 @@ export class LiveCycle {
     }
   }
   async repairIdleHistory(frame,reason){
-    if(this.frame?.id===frame.id&&Object.values(this.frame.opponent_melds??{}).some(m=>m.tracking?.reason==='previously visible meld omitted')){
-      frame={...frame,opponent_melds:{...frame.opponent_melds}};
-      for(const [p,m] of Object.entries(this.frame.opponent_melds))
-        if(m.tracking?.reason==='previously visible meld omitted')frame.opponent_melds[p]=m;
-    }
+    this.meldObservations??=new MeldObservationCache();
+    this.meldObservations.apply(this.publicFrame??this.anchor.before);
+    frame=this.meldObservations.apply(frame);
     if(!this.callRiverPlayers)this.observeCallRivers(this.anchor.before);
     this.observeCallRivers(frame);
     const session=this.session;
@@ -184,7 +182,7 @@ export class LiveCycle {
     const screenshot=await this.preserveRebuildFrame(frame,reason,'idle_history_repaired');
     this.publicFrame=recoveredFrame;this.consumed=[];this.opening=null;this.openingConsumed=[];this.snapshotEvent=null;
     this.riverObservations=new RiverObservationCache();this.riverObservations.apply(frame);
-    this.meldObservations=new MeldObservationCache();this.meldObservations.apply(frame);
+    this.meldObservations.apply(frame);
     this.reactionObservations=new ReactionObservationCache();this.reactionObservations.observe(frame);
     this.lastDecisionObservation=structuredClone(frame);this.reactionEvidence=null;this.lastReactionKey=null;
     this.lastIdleRepairSignature=signature;this.recoveringEvidence=false;this.unresolvedSince=null;
