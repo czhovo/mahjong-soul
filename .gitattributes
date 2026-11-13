@@ -1,0 +1,12 @@
+* text=auto
+*.mjs text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.exe binary
+*.dll binary
+# Preserve upstream license text exactly, including its original whitespace.
+licenses/** -whitespace

@@ -1,0 +1,209 @@
+{
+  "controller": "v7",
+  "date": "2026-11-14",
+  "x64": "Tingfeng v96-hp: original official static builds. Tingyuan v10: rebuilt from identical observed-pon source and flags, using the byte-identical nlohmann/json header at a non-personal toolchain path; source input path is relative. No search/score algorithm changes.",
+  "arm64": {
+    "compiler": "clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)",
+    "flags": [
+      "-std=c++17",
+      "-O2",
+      "-static",
+      "-s",
+      "-pthread",
+      "-Werror=return-type",
+      "-Wl,--no-insert-timestamp",
+      "-DTINGFENG_SEARCH_SECONDS=<5.50|3.50|2.20>",
+      "3p5: -DPARALLEL_LOW_BUDGET",
+      "2p2: -DPARALLEL_2P2_BUDGET"
+    ],
+    "platform_changes": [
+      "Provide standard C++17 headers instead of the GNU-only bits/stdc++.h umbrella.",
+      "Guard x86 cpuid header and instructions; use Windows ARM64 CPU label.",
+      "On ARM64 permit a single EfficiencyClass; keep the highest-class physical-core CPU-set binding and one worker per core."
+    ],
+    "algorithm_changes": false,
+    "runtime_verified_on_arm64_hardware": false
+  },
+  "sources": {
+    "tingfeng-v96-hp": {
+      "original_tree_sha256": "7524ac0ce2bcb02d80c7b9bc36b66903af1a29fe064444c7e2fbe30b6a425481",
+      "bot_cpp_sha256": "ab223e927958d27b9c458a44ca6a01a65c65370692c72b449ccba91546b669ef",
+      "arm_runtime_sha256": "f4f5fe5fb07952d777d05c0015e012dc78ef19fd89dbe719ece8a4fc86642a7d"
+    },
+    "tingyuan-v10": {
+      "original_tree_sha256": "9d485541b5ead61b2f2c49496ddb5a57fc60b61b7a892acd05a8ad41a0ab694b",
+      "bot_cpp_sha256": "8f780cd446bea28c5e5c9949b4030b01d17bea71320af7cc184635ad2dd8275e",
+      "arm_runtime_sha256": "f4f5fe5fb07952d777d05c0015e012dc78ef19fd89dbe719ece8a4fc86642a7d"
+    }
+  },
+  "imports": [
+    {
+      "file": "bin/windows-x64/tingfeng-v96-hp-5p5.exe",
+      "dlls": [
+        "KERNEL32.dll",
+        "msvcrt.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-x64/tingfeng-v96-hp-3p5.exe",
+      "dlls": [
+        "KERNEL32.dll",
+        "msvcrt.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-x64/tingfeng-v96-hp-2p2.exe",
+      "dlls": [
+        "KERNEL32.dll",
+        "msvcrt.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-x64/tingyuan-v10-5p5.exe",
+      "dlls": [
+        "KERNEL32.dll",
+        "msvcrt.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-x64/tingyuan-v10-3p5.exe",
+      "dlls": [
+        "KERNEL32.dll",
+        "msvcrt.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-x64/tingyuan-v10-2p2.exe",
+      "dlls": [
+        "KERNEL32.dll",
+        "msvcrt.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-arm64/tingfeng-v96-hp-5p5.exe",
+      "dlls": [
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-private-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "KERNEL32.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "api-ms-win-crt-multibyte-l1-1-0.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-arm64/tingfeng-v96-hp-3p5.exe",
+      "dlls": [
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-private-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "KERNEL32.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "api-ms-win-crt-multibyte-l1-1-0.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-arm64/tingfeng-v96-hp-2p2.exe",
+      "dlls": [
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-private-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "KERNEL32.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "api-ms-win-crt-multibyte-l1-1-0.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-arm64/tingyuan-v10-5p5.exe",
+      "dlls": [
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-private-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "KERNEL32.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "api-ms-win-crt-multibyte-l1-1-0.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-arm64/tingyuan-v10-3p5.exe",
+      "dlls": [
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-private-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "KERNEL32.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "api-ms-win-crt-multibyte-l1-1-0.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll"
+      ]
+    },
+    {
+      "file": "bin/windows-arm64/tingyuan-v10-2p2.exe",
+      "dlls": [
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-private-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "KERNEL32.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "api-ms-win-crt-multibyte-l1-1-0.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll"
+      ]
+    }
+  ],
+  "tingyuan_x64_privacy_rebuild": {
+    "compiler": "g++.exe (GCC) 16.2.0",
+    "algorithm_changes": false,
+    "artifacts": [
+      {
+        "profile": "5p5",
+        "sha256": "32cdd78e0a6807f3244ed68bfa1932e75f6593b08cb2894c4536d2a36f22171a",
+        "size": 2733568,
+        "seconds": 358.98
+      },
+      {
+        "profile": "3p5",
+        "sha256": "244d9226e64cdf7d1660bdbb3cbc5841912d57a3e26ee70b97ec716a30b63b4f",
+        "size": 2733568,
+        "seconds": 330.31
+      },
+      {
+        "profile": "2p2",
+        "sha256": "fd491ea900a00d56900eea2586eea83b1aa100dc4e738ec48bc965f983bd4add",
+        "size": 2733568,
+        "seconds": 334.69
+      }
+    ]
+  }
+}

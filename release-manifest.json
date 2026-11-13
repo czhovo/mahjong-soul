@@ -1,0 +1,152 @@
+{
+  "repository": "czhovo/mahjong-soul",
+  "engines": [
+    {
+      "players": 4,
+      "architecture": "x64",
+      "profile": "5p5",
+      "version": "v96-hp-5p5",
+      "searchSeconds": 5.5,
+      "source": "bin/windows-x64/tingfeng-v96-hp-5p5.exe",
+      "path": "engines/v96-hp-5p5/bot.exe",
+      "sha256": "42b70b91e4f3f2926045f412bb9577fb167dbbec48f464f891b419b16f00e6ff",
+      "size": 2708992
+    },
+    {
+      "players": 4,
+      "architecture": "x64",
+      "profile": "3p5",
+      "version": "v96-hp-3p5",
+      "searchSeconds": 3.5,
+      "source": "bin/windows-x64/tingfeng-v96-hp-3p5.exe",
+      "path": "engines/v96-hp-3p5/bot.exe",
+      "sha256": "a29dde80d64e3d352cf758ca83c7a197cca4d729ac51fb01c6f9bf16ec4021e7",
+      "size": 2708992
+    },
+    {
+      "players": 4,
+      "architecture": "x64",
+      "profile": "2p2",
+      "version": "v96-hp-2p2",
+      "searchSeconds": 2.2,
+      "source": "bin/windows-x64/tingfeng-v96-hp-2p2.exe",
+      "path": "engines/v96-hp-2p2/bot.exe",
+      "sha256": "720c998f4aa0dd1756c35a127e8bbb2ef650608482aa7ff81e4f5b295939ec34",
+      "size": 2708992
+    },
+    {
+      "players": 3,
+      "architecture": "x64",
+      "profile": "5p5",
+      "version": "v10-5p5",
+      "searchSeconds": 5.5,
+      "source": "bin/windows-x64/tingyuan-v10-5p5.exe",
+      "path": "sanma/engines/observed-pon/tingyuan-v10-5p5.exe",
+      "sha256": "32cdd78e0a6807f3244ed68bfa1932e75f6593b08cb2894c4536d2a36f22171a",
+      "size": 2733568
+    },
+    {
+      "players": 3,
+      "architecture": "x64",
+      "profile": "3p5",
+      "version": "v10-3p5",
+      "searchSeconds": 3.5,
+      "source": "bin/windows-x64/tingyuan-v10-3p5.exe",
+      "path": "sanma/engines/observed-pon/tingyuan-v10-3p5.exe",
+      "sha256": "244d9226e64cdf7d1660bdbb3cbc5841912d57a3e26ee70b97ec716a30b63b4f",
+      "size": 2733568
+    },
+    {
+      "players": 3,
+      "architecture": "x64",
+      "profile": "2p2",
+      "version": "v10-2p2",
+      "searchSeconds": 2.2,
+      "source": "bin/windows-x64/tingyuan-v10-2p2.exe",
+      "path": "sanma/engines/observed-pon/tingyuan-v10-2p2.exe",
+      "sha256": "fd491ea900a00d56900eea2586eea83b1aa100dc4e738ec48bc965f983bd4add",
+      "size": 2733568
+    },
+    {
+      "players": 4,
+      "architecture": "arm64",
+      "profile": "5p5",
+      "version": "v96-hp-5p5",
+      "searchSeconds": 5.5,
+      "source": "bin/windows-arm64/tingfeng-v96-hp-5p5.exe",
+      "path": "engines/v96-hp-5p5/bot.exe",
+      "sha256": "ca9a6a81e0f7b54b58094c42f3883daa8ec461917273c7f10fa227304a04fb8d",
+      "size": 2608640
+    },
+    {
+      "players": 4,
+      "architecture": "arm64",
+      "profile": "3p5",
+      "version": "v96-hp-3p5",
+      "searchSeconds": 3.5,
+      "source": "bin/windows-arm64/tingfeng-v96-hp-3p5.exe",
+      "path": "engines/v96-hp-3p5/bot.exe",
+      "sha256": "83c33903bb8bdcef06204359f39660b84da3d4f710babbf2db2fe2ff9c6f5098",
+      "size": 2608640
+    },
+    {
+      "players": 4,
+      "architecture": "arm64",
+      "profile": "2p2",
+      "version": "v96-hp-2p2",
+      "searchSeconds": 2.2,
+      "source": "bin/windows-arm64/tingfeng-v96-hp-2p2.exe",
+      "path": "engines/v96-hp-2p2/bot.exe",
+      "sha256": "397d705bd5ccbf14079cf156de83fdb77ab19b4bbc1b3da59ff723f109605d47",
+      "size": 2608640
+    },
+    {
+      "players": 3,
+      "architecture": "arm64",
+      "profile": "5p5",
+      "version": "v10-5p5",
+      "searchSeconds": 5.5,
+      "source": "bin/windows-arm64/tingyuan-v10-5p5.exe",
+      "path": "sanma/engines/observed-pon/tingyuan-v10-5p5.exe",
+      "sha256": "61fb5c83f30a526d085916c30dc06408ee7d50580d272910cbf3cf0d615583cd",
+      "size": 2619392
+    },
+    {
+      "players": 3,
+      "architecture": "arm64",
+      "profile": "3p5",
+      "version": "v10-3p5",
+      "searchSeconds": 3.5,
+      "source": "bin/windows-arm64/tingyuan-v10-3p5.exe",
+      "path": "sanma/engines/observed-pon/tingyuan-v10-3p5.exe",
+      "sha256": "bc675001a72bc5a35c4fa3b83ac68999b55e32353eebc059dde3e32209cc0b6a",
+      "size": 2619392
+    },
+    {
+      "players": 3,
+      "architecture": "arm64",
+      "profile": "2p2",
+      "version": "v10-2p2",
+      "searchSeconds": 2.2,
+      "source": "bin/windows-arm64/tingyuan-v10-2p2.exe",
+      "path": "sanma/engines/observed-pon/tingyuan-v10-2p2.exe",
+      "sha256": "294e4fda3a69995ef6bf9d944e44761e14a8037678b7a314aaba3866b136c59b",
+      "size": 2619392
+    }
+  ],
+  "autohotkey": {
+    "version": "2.0.30",
+    "url": "https://github.com/AutoHotkey/AutoHotkey/releases/download/v2.0.30/AutoHotkey_2.0.30.zip",
+    "sha256": "1e0ece7ecb2d5646e55758150472677996a57f9db5c83d2996d8b47b9e2f31a4"
+  },
+  "controller": "v7",
+  "release": "v7-20261114-clean",
+  "capture": {
+    "backend": "wgc",
+    "architecture": "x64",
+    "pythonArchitecture": "x64",
+    "source": "bin/capture/windows-x64/wgc-capture.dll",
+    "path": "runtime/wgc/wgc-capture.dll",
+    "sha256": "f3df90a2564d9b26492689d38b406cffb6ab3110a74cd47b20b06016a1224f29"
+  }
+}

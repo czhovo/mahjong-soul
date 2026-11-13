@@ -1,0 +1,14 @@
+{
+  "name": "mahjong-soul-tingfeng",
+  "version": "7.0.0",
+  "private": true,
+  "type": "module",
+  "description": "雀魂三人场与四人场识别、决策引擎接口和操作执行",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node resident.mjs",
+    "test": "node --test distribution.test.mjs"
+  }
+}

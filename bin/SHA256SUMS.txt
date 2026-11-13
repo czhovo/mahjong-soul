@@ -1,0 +1,12 @@
+42b70b91e4f3f2926045f412bb9577fb167dbbec48f464f891b419b16f00e6ff  windows-x64/tingfeng-v96-hp-5p5.exe
+a29dde80d64e3d352cf758ca83c7a197cca4d729ac51fb01c6f9bf16ec4021e7  windows-x64/tingfeng-v96-hp-3p5.exe
+720c998f4aa0dd1756c35a127e8bbb2ef650608482aa7ff81e4f5b295939ec34  windows-x64/tingfeng-v96-hp-2p2.exe
+32cdd78e0a6807f3244ed68bfa1932e75f6593b08cb2894c4536d2a36f22171a  windows-x64/tingyuan-v10-5p5.exe
+244d9226e64cdf7d1660bdbb3cbc5841912d57a3e26ee70b97ec716a30b63b4f  windows-x64/tingyuan-v10-3p5.exe
+fd491ea900a00d56900eea2586eea83b1aa100dc4e738ec48bc965f983bd4add  windows-x64/tingyuan-v10-2p2.exe
+ca9a6a81e0f7b54b58094c42f3883daa8ec461917273c7f10fa227304a04fb8d  windows-arm64/tingfeng-v96-hp-5p5.exe
+83c33903bb8bdcef06204359f39660b84da3d4f710babbf2db2fe2ff9c6f5098  windows-arm64/tingfeng-v96-hp-3p5.exe
+397d705bd5ccbf14079cf156de83fdb77ab19b4bbc1b3da59ff723f109605d47  windows-arm64/tingfeng-v96-hp-2p2.exe
+61fb5c83f30a526d085916c30dc06408ee7d50580d272910cbf3cf0d615583cd  windows-arm64/tingyuan-v10-5p5.exe
+bc675001a72bc5a35c4fa3b83ac68999b55e32353eebc059dde3e32209cc0b6a  windows-arm64/tingyuan-v10-3p5.exe
+294e4fda3a69995ef6bf9d944e44761e14a8037678b7a314aaba3866b136c59b  windows-arm64/tingyuan-v10-2p2.exe
