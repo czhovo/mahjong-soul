@@ -18,7 +18,7 @@ import {ClientAdapter} from './client-adapter.mjs';
 import {TingfengSession} from './bridge.mjs';
 import {LiveCycle} from './live-cycle.mjs';
 import {verifyDiscard} from './discard-verification.mjs';
-import {roundIdentity} from './round-boundary.mjs';
+import {roundIdentity,AbnormalBoundaryTracker} from './round-boundary.mjs';
 import {nextOpening,estimatedNextOpening} from './next-opening.mjs';
 import {checkpointReplacer} from './checkpoint-json.mjs';
 import {cleanupRuntime} from './runtime-cleanup.mjs';
@@ -29,9 +29,9 @@ import {TerminalLog,actionName} from './terminal-log.mjs';
 import {waitHistory} from './wait-details.mjs';
 import {snapshotRecovery} from './snapshot-recovery.mjs';
 import {acquireStart} from './acquire-start.mjs';
-import {clickGameTitle} from './focus-game.mjs';
 import {holdDecisionFocus} from './decision-focus.mjs';
 import {SearchBudget} from './search-budget.mjs';
+import {WindowsNotifier,formatRoundLabel,formatSettlementSummary} from './windows-notify.mjs';
 
 const ROOT=dirname(fileURLToPath(import.meta.url));
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
@@ -87,7 +87,7 @@ export async function runLiveHand(config){
  };
  const lockPath=join(GAME.runtimeRoot??ROOT,'queue','live-run.lock');await mkdir(dirname(lockPath),{recursive:true});
  const lock=await acquireProcessLock(lockPath,JSON.stringify({pid:process.pid,directory,startedAt:new Date().toISOString()}));
- let capture=config.runtime?.capture,recorder,adapter=config.runtime?.adapter,session,pump,originalInspect,matchEnded=false;
+ let capture=config.runtime?.capture,recorder,adapter=config.runtime?.adapter,session,pump,originalInspect,matchEnded=false,roundReset=false;
  let decisionFocus=null,focusedNotice=null;
  async function releaseDecisionFocus(){
   const held=decisionFocus;decisionFocus=null;
@@ -104,6 +104,8 @@ export async function runLiveHand(config){
   await decisionFocus.ready;
  }
  const settlements=continuing?.settlements??new SettlementCollector();
+ const notifier=config.runtime?.notifier??config.notifier??new WindowsNotifier();
+ notifier.setWindow(config.window);
  const status={pid:process.pid,startedAt:new Date().toISOString(),status:'initializing',actions:0};
  async function save(extra={}){
   Object.assign(status,extra,{updatedAt:new Date().toISOString()});
@@ -113,6 +115,7 @@ export async function runLiveHand(config){
   status.engine=await verifyEngineBuild(config.executable);
   capture=config.runtime?.capture??new NativeCapture(config.window);await capture.ready;
   adapter=config.runtime?.adapter??new ClientAdapter({get_window_state:()=>capture.capture()},config.window);await adapter.ready;
+  adapter.bindAbortSignal?.(config.signal);
   if(continuing)reconnectAdapter(continuing.pump.adapter,adapter);
   adapter.naku=config.naku===true;
   adapter.kokushiRoute=kokushiRoute;
@@ -155,31 +158,26 @@ export async function runLiveHand(config){
    settlements.observe(frame,config.seats);
    // Stable settlement overlay is the result, without a central-score veto.
    const finalScores=settlements.candidate,ctx=session?.context??config.context;
-   if(finalScores&&ctx?.scores)
-    terminal.settlement(finalScores,ctx,JSON.stringify([config.seats,ctx.hand_index,ctx.honba]));
+   if(finalScores&&ctx?.scores){
+    const roundKey=JSON.stringify([config.seats,ctx.hand_index,ctx.honba]);
+    terminal.settlement(finalScores,ctx,roundKey);
+    notifier.notifyHandEnded({
+     roundKey,
+     roundLabel:formatRoundLabel(ctx,config.wind??0),
+     summary:'本局结算：'+formatSettlementSummary(finalScores,ctx),
+     frame,
+    });
+   }
    return frame;
   };
   // With a recognized entry frame, print the opening before initializing input.
   // sendClickUnlocked already awaits prepareOutput before publishing any input.
   if(!config.runtime?.entryFrame)await adapter.prepareOutput();
-  let lastCentralRecoveryNotice=null;
   adapter.searchBudget.report=message=>terminal.budgetNotice(message);
   recorder=new ContinuousCapture(()=>captureWithDecisionTimer(capture,adapter.searchBudget,adapter.searchBudget.inSearch,adapter.searchBudget.report),join(directory,'captures'));
   recorder.start({durationMs:(config.durationMs??300000)+60000,intervalMs:100,
    onPriorityFrame:state=>adapter.dismissModal(state),
-   onCaptureState:async event=>appendEvidence(join(directory,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),...event})+'\n','utf8'),
-   onCentralStill:config.lagRecovery===true?async(state,stall)=>{
-   const frame=adapter.latest??pump?.frame;
-   if(!frame||(!session&&!roundIdentity(frame))||frame.settlement?.complete||frame.terminal_phase?.name==='match_end')return false;
-   if(lastCentralRecoveryNotice!==stall.since){
-    terminal.line('检测到Mahjong Soul卡顿，正在尝试恢复');lastCentralRecoveryNotice=stall.since;
-   }
-   try{
-    if(await adapter.clickRecovery(()=>clickGameTitle(config.window,adapter))===false)return false;
-    await appendEvidence(join(directory,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),kind:'central_pixels_still_title_click',thresholdMs:2000})+'\n','utf8');
-   }catch(error){await appendEvidence(join(directory,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),kind:'title_click_unavailable',reason:error.message})+'\n','utf8');}
-   return true;
-  }:null});
+   onCaptureState:async event=>appendEvidence(join(directory,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),...event})+'\n','utf8')});
   adapter.captureSource=recorder;adapter.captureSequence=0;
   const runEnd=performance.now()+(config.durationMs??300000);let handsCompleted=continuing?.handsCompleted??0;
   if(!continuing&&config.autoOpening){
@@ -244,7 +242,7 @@ export async function runLiveHand(config){
    terminal.startRound(before);
    if(config.snapshot){session.context=config.context;session.restoreSnapshot(config.snapshot);}
    else session.begin({seat:config.seats.self,round:config.wind,hand:config.hand,indicator:config.indicator,context:config.context});
-   pump=new LiveCycle(adapter,session,{before,decision:null,evidence:join(directory,'events.jsonl')});
+   pump=new LiveCycle(adapter,session,{before,decision:null,evidence:join(directory,'events.jsonl'),boundaryOptions:config.boundaryOptions});
    if(config.snapshot){
     terminal.takeover(before,session.context,config.snapshot.event);
     const screenshot=await pump.preserveRebuildFrame(structuredClone(before),'从当前画面建立接续历史','initial_snapshot_recovery');
@@ -281,13 +279,13 @@ export async function runLiveHand(config){
    const hasSpecialOpening=openingPolicy.request.validact.split(',').some(a=>a.trim()&&!a.trim().startsWith('PLAY'));
    const damaOpeningNorth=!kokushiRoute.active&&isDamaTenpaiNorthDraw(before,{draw:config.draw,history:session.requests,kokushiRouteActive:kokushiRoute.active});
    if(damaOpeningNorth){
-    pump=new LiveCycle(adapter,session,{decision:null,before,evidence:join(directory,'events.jsonl')});
+    pump=new LiveCycle(adapter,session,{decision:null,before,evidence:join(directory,'events.jsonl'),boundaryOptions:config.boundaryOptions});
     pump.publicFrame=before;pump.snapshotEvent=draw;
    }else if(!kokushiRoute.active&&automaticNorthDraw(before,adapter.autoKitaOutput)){
-    pump=new LiveCycle(adapter,session,{decision:null,before,evidence:join(directory,'events.jsonl')});
+    pump=new LiveCycle(adapter,session,{decision:null,before,evidence:join(directory,'events.jsonl'),boundaryOptions:config.boundaryOptions});
     pump.publicFrame=before;pump.snapshotEvent=draw;pump.waitForAutomaticNorth(before,[draw]);
    }else if(kokushiRoute.active||hasSpecialOpening||before.controls?.KYUSHU){
-    pump=new LiveCycle(adapter,session,{decision:null,before,evidence:join(directory,'events.jsonl')});
+    pump=new LiveCycle(adapter,session,{decision:null,before,evidence:join(directory,'events.jsonl'),boundaryOptions:config.boundaryOptions});
     pump.publicFrame=before;pump.snapshotEvent=draw;
    }else{
     try{first=await adapter.decideAndDiscard(session,openingRequest,before);}
@@ -300,11 +298,11 @@ export async function runLiveHand(config){
   }
   if(proof){
    await session.confirm(first.decision.output.response);
-   pump=new LiveCycle(adapter,session,{decision:first.decision,before,evidence:join(directory,'events.jsonl')});
+   pump=new LiveCycle(adapter,session,{decision:first.decision,before,evidence:join(directory,'events.jsonl'),boundaryOptions:config.boundaryOptions});
   }else if(first){
    // First discard uses the same retry/recovery path as every later discard.
    const pending=session.pending;session.pending=null;
-   pump=new LiveCycle(adapter,session,{decision:first.decision,before,evidence:join(directory,'events.jsonl')});
+   pump=new LiveCycle(adapter,session,{decision:first.decision,before,evidence:join(directory,'events.jsonl'),boundaryOptions:config.boundaryOptions});
    session.pending=pending;
    pump.pending={decision:first.decision,before,started:performance.now()};
   }
@@ -318,11 +316,40 @@ export async function runLiveHand(config){
   };
   pump.afterDecisionInput=releaseDecisionFocus;
   pump.record=async event=>{await record(event);terminal.event(event);
+   notifier.observeLiveEvent(event,{frame:adapter?.latest??pump?.rawFrame??null});
  await save({actions:pump.actions,lastEvent:event.kind,lastAction:event.action,pending:session.pending?.output.response??null});};
   await save({pending:null,initialProof:proof});
   const result=await pump.run({milliseconds:Math.max(0,runEnd-performance.now()),maxActions:config.maxActions??60,signal:config.signal});
   await releaseDecisionFocus();focusedNotice=null;
+  if(result.status==='match_ended'){
+   handContinuity?.clear();
+   const ended={...result,handsCompleted};
+   await save({status:'finished',result:ended,actions:pump.actions});
+   matchEnded=true;return ended;
+  }
+  if(result.status==='round_boundary'&&result.abnormal&&!result.sameRoundReset){
+   const ctx=session?.context??config.context;
+   const roundKey=JSON.stringify([config.seats,ctx?.hand_index,ctx?.honba]);
+   notifier.notifyHandEnded({
+    roundKey,
+    roundLabel:formatRoundLabel(ctx,config.wind??0),
+    summary:'检测到新对局或非连续换局',
+    frame:adapter?.latest??pump?.rawFrame??null,
+   });
+   handContinuity?.clear();
+   const resetResult={status:'round_reset',abnormal:true,reason:result.reason,handsCompleted,frame:result.frame};
+   await save({status:'finished',result:resetResult,actions:pump.actions});
+   roundReset=true;return resetResult;
+  }
   if(result.status==='round_boundary'||result.status==='hand_ended'){
+   const ctx=session?.context??config.context;
+   const roundKey=JSON.stringify([config.seats,ctx?.hand_index,ctx?.honba]);
+   notifier.notifyHandEnded({
+    roundKey,
+    roundLabel:formatRoundLabel(ctx,config.wind??0),
+    summary:result.sameRoundReset?'途中流局/同局重开':'本局已结束，准备进入下一局',
+    frame:adapter?.latest??pump?.rawFrame??null,
+   });
    handContinuity?.clear();
    handsCompleted++;
    await save({status:'recovering_current_table',lastResult:result,handsCompleted});
@@ -330,25 +357,40 @@ export async function runLiveHand(config){
    // A terminal match or an unreadable/missed opening never authorizes input.
    // The time bound keeps the CLI finite without aborting a sent transaction.
    const nextDeadline=Math.min(runEnd,performance.now()+30000);
-   let tableReadAttempted=false,tableProof=null;
+   let tableReadAttempts=0,tableReadDone=false,tableProof=null;
+   const allowSameRound=result.sameRoundReset===true;
+   const transitionTracker=new AbnormalBoundaryTracker(config.boundaryOptions);
+   transitionTracker.markSettlement();
    const settledScores=()=>settlements.candidate??(result.proof?.source==='visible-settlement-candidate'||result.proof?.verified?result.proof:null);
    const openingWaitReasons=new Map();
    const scoreWaitUntil=performance.now()+1500;
    while(performance.now()<nextDeadline&&!config.signal?.aborted){
     let next=await adapter.inspect({meld_count:0,phase:'auto',observeSettlement:true,auto_meld_count:true});
+    if(next.settlement?.complete||next.result_page?.kind==='own-win-settlement')transitionTracker.markSettlement();
     const identity=roundIdentity(next);
-    if(!tableReadAttempted&&!settledScores()&&performance.now()>=scoreWaitUntil&&identity&&
-       (identity.wind!==(config.wind??0)||identity.hand!==config.context.hand_index||identity.honba!==config.context.honba)){
-     tableReadAttempted=true;
+    if(!tableReadDone&&tableReadAttempts<4&&!tableProof&&!settledScores()&&performance.now()>=scoreWaitUntil&&identity&&
+       (allowSameRound||identity.wind!==(config.wind??0)||identity.hand!==config.context.hand_index||identity.honba!==config.context.honba)){
+     tableReadAttempts++;
      try{
       next=await adapter.inspect({meld_count:0,phase:'auto',observeSettlement:true,auto_meld_count:true,readTableScores:true});
-      const labels={self:'自己',right:'下家',opposite:'对家',left:'上家'};
-      terminal.line('结算漏读，牌桌中央点数：'+GAME.positions.map(p=>`${labels[p]} ${next.table_scores?.scores?.[p]?.value??'未读出'}`).join(' / '));
-      tableProof=tableScoreSettlement(config,{frame:next,firstId:next.id},next);
-     }catch(error){terminal.line(`中央点数补读未能采用：${error.message}`);}
+      if(next.table_scores?.complete){
+       tableReadDone=true;
+       const labels={self:'自己',right:'下家',opposite:'对家',left:'上家'};
+       terminal.line('结算漏读，牌桌中央点数：'+GAME.positions.map(p=>`${labels[p]} ${next.table_scores?.scores?.[p]?.value??'未读出'}`).join(' / '));
+       tableProof=tableScoreSettlement(config,{frame:next,firstId:next.id},next,{allowSameRound});
+      }
+     }catch(error){tableReadDone=true;terminal.line(`中央点数补读未能采用：${error.message}`);}
     }
     if(next.terminal_phase?.name==='match_end'){
      const ended={status:'match_ended',handsCompleted,frame:next.id};await save({status:'finished',result:ended});matchEnded=true;return ended;
+    }
+    const transitionExit=transitionTracker.observe(pump.anchor.before,next,{resetBaseline:null});
+    if(transitionExit?.status==='match_ended'){
+     const ended={...transitionExit,handsCompleted};await save({status:'finished',result:ended});matchEnded=true;return ended;
+    }
+    if(transitionExit?.status==='round_boundary'){
+     const resetResult={status:'round_reset',abnormal:true,reason:transitionExit.reason,handsCompleted,frame:next.id};
+     await save({status:'finished',result:resetResult});roundReset=true;return resetResult;
     }
     try{
      // Central scores are fallback only; a stable overlay takes precedence.
@@ -360,13 +402,13 @@ export async function runLiveHand(config){
       if(performance.now()<scoreWaitUntil)continue;
       throw Error('Stable settlement candidate required');
      }
-     opening=nextOpening(config,proof,next,{allowSnapshot:true});
+     opening=nextOpening(config,proof,next,{allowSnapshot:true,allowSameRound});
      terminal.settlement(proof,session.context??config.context,JSON.stringify([config.seats,config.context.hand_index,config.context.honba]));
      await save({verifiedSettlement:proof});break;
     }catch(openingError){
      try{
       if(settledScores()||tableProof)throw openingError;
-      opening=estimatedNextOpening({...config,context:session.context??config.context},next);
+      opening=estimatedNextOpening({...config,context:session.context??config.context},next,{allowSameRound});
       terminal.line('结算点数漏读：暂用估计点数继续下一局，等待后续结算校正');
       await save({estimatedSettlement:opening.context});break;
      }catch(fallbackError){
@@ -402,12 +444,21 @@ export async function runLiveHand(config){
   matchEnded=result.status==='match_ended';
   return result;
   }
- }catch(error){terminal.line(`运行中断：${error.message}`);await save({status:'failed',error:error.message,pending:session?.pending?.output?.response??null});throw error;}
+ }catch(error){
+  if(error.name==='AbortError'||config.signal?.aborted){
+   const stopped={status:'stopped',pending:!!(pump?.pending||pump?.special)};
+   await save({status:'stopped',result:stopped,actions:pump?.actions??0});
+   return stopped;
+  }
+  terminal.line(`运行中断：${error.message}`);
+  notifier.notifyBlocked({reason:`运行中断：${error.message}`,key:`blocked:fatal:${error.message}`,frame:adapter?.latest??null});
+  await save({status:'failed',error:error.message,pending:session?.pending?.output?.response??null});throw error;
+ }
  finally{
-  const handBack=matchEnded&&config.runtime?.reuseAfterMatch===true&&!config.signal?.aborted;
+  const handBack=(matchEnded||roundReset)&&config.runtime?.reuseAfterMatch===true&&!config.signal?.aborted;
   try{await cleanupRuntime([
    releaseDecisionFocus,
-   ()=>{if(matchEnded||!handContinuity?.state||config.signal?.aborted)session?.pending?.callSearch?.cancel();},
+   ()=>{if(matchEnded||roundReset||!handContinuity?.state||config.signal?.aborted)session?.pending?.callSearch?.cancel();},
    ()=>writeFile(join(directory,'checkpoint.json'),JSON.stringify({session,pending:pump?.pending,special:pump?.special,win:pump?.win,points:adapter?.points,lastFrame:adapter?.latest},checkpointReplacer,2),'utf8'),
    ()=>recorder?.stop(),()=>{if(!handBack)return adapter?.close();},()=>{if(!handBack)return capture?.close();},
    ()=>flushEvidence(),()=>lock.close(),()=>unlink(lockPath)

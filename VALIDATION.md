@@ -1,5 +1,5 @@
-# 公开版检查范围
+# Public Release Scope (v13)
 
-公开版 v12 仅保留 `--name` 自动内存昵称匹配路径，不含预置个人昵称模板、启动自检、本方和牌或终局截图保存，也不输出个人和牌、整场排名或 PT 结算。仓库保留识别所需的局部模板；运行日志、个人配置及完整游戏截图不随仓库分发。
+Tingfeng Controller v13 uses runtime in-memory nickname glyph capture by default and contains no hardcoded nickname templates, personal screenshots, or startup calibration fixtures. Runtime logs, local configs, and captured screenshots are excluded from the repository.
 
-在项目目录运行 `npm test` 可检查公开版启动、隐私脱敏边界、相对导入完整性、换局、自动拔北及终局按钮流程。测试不需要启动雀魂。听风 v103 与听元 v13 的 Windows x64 编译结果通过 GitHub Release 独立分发，安装时按 `release-manifest.json` 校验 SHA-256。
+Run `npm test` in the repository root to verify distribution integrity, import completeness, manifest checksums, and core logic without launching the game client. Prebuilt Windows x64 binaries for Tingfeng v105 and Tingyuan v15 are distributed via GitHub Releases and verified against `release-manifest.json` during setup.

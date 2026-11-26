@@ -1,7 +1,7 @@
 {
-  "interface": "v12",
-  "tingfeng": "v103",
-  "tingyuan": "v13",
+  "interface": "v13",
+  "tingfeng": "v105",
+  "tingyuan": "v15",
   "recognize": "v7",
-  "execute": "v3"
+  "execute": "v4"
 }

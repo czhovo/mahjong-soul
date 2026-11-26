@@ -61,7 +61,7 @@ export function restrictEndgameRiichi(event,context,seat,frame,history,{
  wind=null,
  visibleCounts=null,
 }={}){
- const isEndgame=context?.is_last_scheduled_hand===true||(Number.isInteger(context?.remaining_scheduled_hands)&&context.remaining_scheduled_hands<=1);
+ const isEndgame=context?.is_last_scheduled_hand===true||(Number.isInteger(context?.remaining_scheduled_hands)&&context.remaining_scheduled_hands<=1)||context?.in_extension===true||context?.is_last_extension_hand===true;
  if(!isEndgame||!event.state?.trim().startsWith('2 '))return event;
  const actions=event.validact?.split(',').map(a=>a.trim()).filter(Boolean);
  if(!actions?.some(a=>a.split(/\s+/)[0]==='LIZHI'))return event;

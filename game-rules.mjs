@@ -20,3 +20,10 @@ export function waitPositions(event){
  return (event.candidate_positions??['left','opposite','right'].filter(p=>p!==(source??'left'))).filter(p=>GAME.opponents.includes(p));
 }
 export const remainingHands=(wind,hand)=>Math.max(1,GAME.players*(GAME.scheduledWinds-wind)-hand+1);
+export function extensionFlags(wind,hand){
+ const inExtension=Number.isInteger(wind)&&wind>=GAME.scheduledWinds;
+ return {
+  in_extension:inExtension,
+  is_last_extension_hand:inExtension&&Number.isInteger(hand)&&hand>=GAME.players,
+ };
+}

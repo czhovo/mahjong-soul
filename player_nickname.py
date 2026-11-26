@@ -83,16 +83,3 @@ class Nickname:
         return {k:base64.b64encode(cv2.imencode('.png',v)[1]).decode('ascii') for k,v in self.refs.items()}
     def restore(self,payload):
         self.refs={k:cv2.imdecode(np.frombuffer(base64.b64decode(v),np.uint8),cv2.IMREAD_GRAYSCALE) for k,v in payload.items() if k in SOURCE}
-
-# Only report page identity. Never include a name, score, or screenshot.
-RANK_NAMES=((680,165,920,210),(750,323,950,365),(825,453,1030,495),(890,583,1100,628))
-
-def matched_page(image,nickname,players,confirm_visible):
-    if not nickname.refs:return None
-    if confirm_visible:
-        scores=sorted((nickname.score(image,box,'rank') for box in RANK_NAMES[:players]),reverse=True)
-        if scores[0]>=.75 and scores[0]-scores[1]>=.08:
-            return {'kind':'match-result'}
-    if nickname.score(image,WIN,'win')>=.80:
-        return {'kind':'own-win-settlement'}
-    return None

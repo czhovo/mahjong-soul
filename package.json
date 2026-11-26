@@ -1,9 +1,9 @@
 {
   "name": "mahjong-soul-tingfeng",
-  "version": "12.0.0",
+  "version": "13.0.0",
   "private": true,
   "type": "module",
-  "description": "雀魂三人场与四人场识别、决策引擎接口和操作执行",
+  "description": "Automated Mahjong Soul controller (4-player & 3-player) with Tingfeng v105 / Tingyuan v15 decision engines",
   "engines": {
     "node": ">=22"
   },

@@ -71,6 +71,7 @@ def rematch_center(image):
     return np.rint(layout_points([[x+dx+w/2,y+dy+h/2]],image)[0]).astype(int).tolist()
 
 def recognize_phase(image,result_page=_UNREAD,*,players=4,confirm=None,post_match=False,after_rematch=False):
+    from result_page_vision import read_rank_result,ranking_scores_visible
     errors={'match-end-confirm':confirm_error(image) if confirm is None else confirm}
     def visible(name):
         errors[name]=button_error(image,name)
@@ -80,7 +81,7 @@ def recognize_phase(image,result_page=_UNREAD,*,players=4,confirm=None,post_matc
     dialog=visible('rematch-dialog-confirm')
     if ((post_match and after_rematch and (dialog or (dialog_confirm_face(image) and visible('rematch-dialog-cancel')))) or
         (dialog and visible('rematch-dialog-cancel') and visible('rematch-dialog-title'))):
-        return end('rematch_dialog',REMATCH_CONFIRM=[556,594])
+        return end('rematch_dialog',REMATCH_CONFIRM=[556,594],REMATCH_CANCEL=[808,594])
     if post_match or errors['match-end-confirm']<BUTTON_ERROR:
         exact=visible('rematch-button')
         center=[1039,734] if exact else rematch_center(image)
@@ -95,33 +96,9 @@ def recognize_phase(image,result_page=_UNREAD,*,players=4,confirm=None,post_matc
         # A disappearing button does not prove that the dialog opened.
         return {'name':'unknown','controls':{},'errors':errors}
     if errors['match-end-confirm']<BUTTON_ERROR:
-        if (isinstance(result_page,dict) and result_page.get('kind')=='match-result') or ranking_scores_visible(image,players):
+        if result_page is _UNREAD:
+            result_page=read_rank_result(image,players)
+        if (result_page or {}).get('kind')=='match-result' or ranking_scores_visible(image,players):
             return end('results',CONFIRM=[1241,734])
         if post_match:return end('confirm',CONFIRM=[1241,734])
     return {'name':'unknown','controls':{},'errors':errors}
-
-
-def ranking_scores_visible(image,players):
-    # Two independent numeric rows confirm the page. Ignore the sign: only
-    # the presence of a score is used; no name, rank or PT is returned.
-    from settlement_vision import white,normalize,templates
-    boxes=[(703,211,885,275),(773,365,918,417),(837,495,988,555),(889,624,1060,685)]
-    refs=templates('ww')
-    hits=0
-    for box in boxes[:players]:
-        mask=white(crop_native(image,box))
-        _,_,stats,_=cv2.connectedComponentsWithStats(mask)
-        parts=sorted(tuple(v[:4]) for v in stats[1:] if v[4]>=8 and v[3]>=9)
-        if parts and parts[0][2]>=2*parts[0][3]:parts.pop(0)
-        digits=[]
-        for x,y,w,h in parts:
-            sample=normalize(mask[y:y+h,x:x+w])
-            if sample is None:break
-            scores=sorted((float(np.mean(abs(sample-ref))),n) for n,ref in refs.items())
-            if scores[0][0]>=.27 or scores[1][0]-scores[0][0]<=.015:break
-            digits.append(scores[0][1])
-        else:
-            if digits and int(''.join(digits))%100==0:
-                hits+=1
-                if hits==2:return True
-    return False

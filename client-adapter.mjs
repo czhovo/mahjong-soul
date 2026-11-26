@@ -2,6 +2,7 @@ import {GAME,remainingHands} from './game-rules.mjs';
 import {applyKitaDecision} from './auto-kita.mjs';
 import {automaticNorthDraw,singleNorthReady} from './auto-kita-effect.mjs';
 import {KitaEvidence} from './kita-evidence.mjs';
+import {reportSavedScreenshot} from './screenshot-log.mjs';
 import {blocksTsumoDiscard} from './tsumo-guard.mjs';
 import {modalStatus} from './modal-status.mjs';
 import {modalTextResult} from './modal-text-results.mjs';
@@ -24,7 +25,7 @@ import {publicEvents} from './public-events.mjs';
 import {AhkDriver} from './ahk-driver.mjs';
 import {visibleActions} from './visible-actions.mjs';
 import {verifyWinSettlement} from './win-settlement.mjs';
-import {discardTarget} from './discard-target.mjs';
+import {discardTarget,fixedHandClickCenter} from './discard-target.mjs';
 import {completeFrameScores} from './complete-scores.mjs';
 import {VERSIONS} from './version-info.mjs';
 import {DEFAULT_PYTHON} from './runtime-paths.mjs';
@@ -45,6 +46,7 @@ export class ClientAdapter {
     this.startRecognitionWorker();
   }
   startRecognitionWorker(){
+    this.winFramePending=false;
     this.restoreNicknameOnRequest=true;
     const {python}=this;
     this.workerError=null;
@@ -68,9 +70,19 @@ export class ClientAdapter {
   }
   receiveRecognitionResult(result){
     if(result.nicknameUpdate){
-      if(this.window?.id)nicknameByWindow.set(this.window.id,result.nicknameUpdate);
+      if(this.window?.id&&this.window.title!=='startup-fixture')nicknameByWindow.set(this.window.id,result.nicknameUpdate);
       delete result.nicknameUpdate;
     }
+    // Saved files are completed side effects, independent of whether this
+    // observation is still eligible to drive a click or a decision.
+    const page=result.result_page;
+    if(page?.kind==='own-win-settlement')this.winFramePending=true;
+    if(page?.kind==='saved-screenshot'||page?.additional_screenshots?.length)this.winFramePending=false;
+    if(this.onSavedScreenshot){
+      reportSavedScreenshot(page?.screenshot,this.onSavedScreenshot);
+      for(const path of page?.additional_screenshots??[])reportSavedScreenshot(path,this.onSavedScreenshot);
+    }
+    if(page?.kind==='match-result'&&page.screenshot)this.lastMatchArchive=page;
     const request=this.pending.get(result.id);
     if(request){
       this.pending.delete(result.id);clearTimeout(request.timer);
@@ -85,6 +97,10 @@ export class ClientAdapter {
   }
   async stopRecognitionWorker(){
     const worker=this.worker;
+    if(this.recognitionClosed&&this.winFramePending&&worker?.exitCode===null&&worker.signalCode===null&&worker.stdin.writable){
+      // EOF lets the worker archive its final observed frame before shutdown.
+      await new Promise(resolve=>{worker.once('close',resolve);worker.stdin.end();});
+    }
     this.worker=null;clearTimeout(this.readyTimer);
     if(!worker||worker.exitCode!==null||worker.signalCode!==null)return;
     await new Promise((resolve,reject)=>{
@@ -103,6 +119,7 @@ export class ClientAdapter {
       const timer=this.recognitionTimeoutMs==null?null:setTimeout(()=>{
         this.pending.delete(payload.id);
         this.latest=null;
+        this.restoreMatchArchive=this.lastMatchArchive??this.restoreMatchArchive;
         // Do not release the serial lock until the timed-out computation exits.
         this.stopRecognitionWorker().then(()=>{
           if(!this.recognitionClosed)this.startRecognitionWorker();
@@ -112,17 +129,39 @@ export class ClientAdapter {
       this.pending.set(payload.id,{resolve,reject,timer});
       if(this.restoreNicknameOnRequest){
         this.restoreNicknameOnRequest=false;
-        if(nicknameByWindow.has(this.window?.id))
+        if(this.window?.title!=='startup-fixture'&&nicknameByWindow.has(this.window?.id))
           payload={...payload,restoreNickname:nicknameByWindow.get(this.window.id)};
       }
-      this.worker.stdin.write(JSON.stringify({...payload,game:GAME.sanma?'sanma':'yonma'})+'\n');
+      this.worker.stdin.write(JSON.stringify({...payload,game:GAME.sanma&&this.window?.title!=='startup-fixture'?'sanma':'yonma'})+'\n');
     });
   }
   fail(error){this.workerError=error;clearTimeout(this.readyTimer);this.readyReject?.(error);for(const request of this.pending.values()){clearTimeout(request.timer);request.reject(error);}this.pending.clear();}
-  async close(){this.recognitionClosed=true;this.fail(Error('Recognition adapter closed'));await this.stopRecognitionWorker();try{await this.outputDriver?.close();}finally{await flushEvidence();}}
+  bindAbortSignal(signal){
+    if(!signal||this.abortSignal===signal)return;
+    if(this.abortSignal&&this.onAbortSignal)this.abortSignal.removeEventListener('abort',this.onAbortSignal);
+    this.abortSignal=signal;
+    const onAbort=()=>{
+      this.aborted=true;
+      this.outputEpoch=(this.outputEpoch??0)+1;
+      try{this.call?.decision?.callSearch?.cancel();}catch{}
+      this.call=null;
+      this.outputDriver?.abortPending('Aborted by user interrupt');
+    };
+    this.onAbortSignal=onAbort;
+    if(signal.aborted)onAbort();
+    else signal.addEventListener('abort',onAbort,{once:true});
+  }
+  assertNotAborted(){
+    if(this.aborted||this.abortSignal?.aborted)throw Object.assign(Error('Aborted by user interrupt'),{name:'AbortError',inputNotSent:true});
+  }
+  async close(){if(this.abortSignal&&this.onAbortSignal){this.abortSignal.removeEventListener('abort',this.onAbortSignal);this.onAbortSignal=null;}this.recognitionClosed=true;this.fail(Error('Recognition adapter closed'));await this.stopRecognitionWorker();try{await this.outputDriver?.close();}finally{await flushEvidence();}}
   async prepareOutput(){
     if(!this.outputDriver)this.outputDriver=new AhkDriver(GAME.runtimeRoot??ROOT);
     await this.outputDriver.start();
+  }
+  async selfTestOutput(window=this.window){
+    if(!this.outputDriver)this.outputDriver=new AhkDriver(GAME.runtimeRoot??ROOT);
+    return this.outputDriver.selfTestFocus(window);
   }
   initializePoints(scores,riichiSticks=0,seats=Object.fromEntries(GAME.positions.map((p,i)=>[p,i]))){
     if(this.points)throw Error('Point ledger already initialized');
@@ -135,7 +174,7 @@ export class ClientAdapter {
     // Workers and the AHK driver survive the match. Hand-specific evidence
     // and points must not survive into a later match with the same East-1 key.
     this.points=null;this.pointSeats=null;this.roundStartRiichiSticks=undefined;
-    this.call=null;this.publicFrameId=null;
+    this.call=null;this.publicFrameId=null;this.resetRoundCache=true;
     delete this.autoWinOutput;delete this.autoKitaOutput;
     this.discardEvidence=new DiscardEvidence();
     this.callWaitEvidence=new CallWaitEvidence({enabled:this.naku===true,onDetected:event=>this.onCallWaitDetected?.(event)});
@@ -232,8 +271,10 @@ export class ClientAdapter {
     }
     else await writeFile(path,Buffer.from(screenshot.url.split(',')[1],'base64'));
     const recognitionStarted=performance.now();
-    const result=await this.recognitionRequest({id,image:path,frameMemory:state.captureEvidence?.frameMemory,capturedAt,beginMatchArchive:this.beginMatchArchive,...layout});
+    const result=await this.recognitionRequest({id,image:path,frameMemory:state.captureEvidence?.frameMemory,capturedAt,restoreMatchArchive:this.restoreMatchArchive,beginMatchArchive:this.beginMatchArchive,...(this.resetRoundCache?{resetRoundCache:true}:{}),...layout});
     this.beginMatchArchive=false;
+    this.resetRoundCache=false;
+    this.restoreMatchArchive=null;
     if(this.modalOutput||observationEpoch!==(this.outputEpoch??0))throw freshObservationRequired('Observation interrupted by priority input; capture again');
     if(result.modal_confirm?.verified){await this.dismissModal({...state,captureEvidence:{...state.captureEvidence,modalConfirm:result.modal_confirm}});return this.inspectUnlocked(layout);}
     await this.confirmModalCleared(state.captureEvidence?.capturedAt??capturedAt);
@@ -255,6 +296,7 @@ export class ClientAdapter {
     result.opponent_hand_constraints=observation.opponent_hand_constraints;
     this.kitaEvidence?.observe(observation);
     this.latest=observation;
+    if(observation.result_page?.kind==='match-result'&&observation.result_page.screenshot)this.lastMatchArchive=observation.result_page;
     this.searchBudget.observeFrame(observation,layout);
     timing.captureWaitMs=captured-started;
     timing.recognitionCompletedAt=recognitionCompletedAt;
@@ -326,8 +368,9 @@ export class ClientAdapter {
     const position=discardTarget(observation.hand.tiles,tile);
     if(!position)throw freshObservationRequired('Discard missing');
     // Allow the authorized five-second bot calculation using the ORIGINAL
-    // input's coordinates. Do not capture/recognize again after deciding.
-    return this.sendClick(observation,position.center,decision.retryInput?"retry":"tile");
+    // input's coordinates. Use fixed overlap-core Y so hover-lift or draw-drop
+    // animation never pushes the click onto a tile edge.
+    return this.sendClick(observation,fixedHandClickCenter(position.center,observation),decision.retryInput?"retry":"tile");
   }
   async pass(decision,observation=this.latest,{retryVisibleButton=false}={}){
     if(!observation||observation!==this.latest||(!retryVisibleButton&&!observation.hand?.complete))throw freshObservationRequired('Current complete reaction hand required');
@@ -406,7 +449,7 @@ export class ClientAdapter {
     const riichiBatch=phase==='button'&&call.sequence.kind==='LIZHI';
     const followUp=riichiBatch?discardTarget(frame.hand.tiles,call.sequence.tile):phase==='call'&&call.sequence instanceof CallSequence?plannedCallChoice(call.sequence,frame):null;
     if(riichiBatch&&!followUp)throw freshObservationRequired('Riichi discard missing');
-    if(followUp){center=[...center];center.followUp=followUp.center;}
+    if(followUp){center=[...center];center.followUp=riichiBatch?fixedHandClickCenter(followUp.center,frame):followUp.center;}
     const advance=()=>{call.sequence.inputSent();if(followUp)call.sequence.inputSent();if(riichiBatch)call.riichiBatch=true;};
     call.lastInput={phase,frame:structuredClone(frame)};
     call.uncertain=true;
@@ -449,9 +492,12 @@ export class ClientAdapter {
         return {gameConfirmed:true,action:decision.output.response};
       }
       const target=sequence.target(observation);
-      // Button retries use the same hit point as their original send. Tile
-      // and combination selections keep their own exact recognized centers.
-      return this.sendCallInput(frame,sequence.phase==='button'?[target.center[0],target.center[1]+18]:target.center,publicState.retryInput);
+      // Button retries use the same hit point as their original send. Riichi
+      // tile discard uses fixed overlap-core Y; combination selections keep exact centers.
+      const point=sequence.phase==='button'?[target.center[0],target.center[1]+18]
+        :sequence.phase==='selection'&&sequence.kind==='LIZHI'?fixedHandClickCenter(target.center,frame)
+        :target.center;
+      return this.sendCallInput(frame,point,publicState.retryInput);
     }
     if(sequence.phase==='await_discard'||(publicState.actionCompleted&&sequence.phase==='discard')){
       if(sequence.phase==='discard')sequence.phase='await_discard';
@@ -462,7 +508,10 @@ export class ClientAdapter {
     if(['await_meld','await_choice_effect'].includes(sequence.phase)&&observation.melds.length===sequence.before.melds.length+1)
       sequence.verifyMeld(observation);
     const target=sequence.target(observation);
-    return this.sendCallInput(frame,sequence.phase==='call'?[target.center[0],target.center[1]+18]:target.center,publicState.retryInput);
+    const callPoint=sequence.phase==='call'?[target.center[0],target.center[1]+18]
+      :sequence.phase==='discard'?fixedHandClickCenter(target.center,frame)
+      :target.center;
+    return this.sendCallInput(frame,callPoint,publicState.retryInput);
   }
   confirmWinSettlement(before,frame=this.latest){
     if(frame!==this.latest||!this.call||this.call.uncertain||this.call.sequence.kind!=='HU')
@@ -472,11 +521,19 @@ export class ClientAdapter {
     this.call=null;
     return proof;
   }
+  async finalizeMatchScreenshot(frame){return this.withRecognition(()=>this.finalizeMatchScreenshotUnlocked(frame));}
   async recheckEndButtons(){
     await this.prepareOutput();
     return this.inspect({phase:'post_match',persistEvidence:false});
   }
+  async finalizeMatchScreenshotUnlocked(frame){
+    const id=randomUUID();
+    const result=await this.recognitionRequest({id,phase:'finalize_match',rankingPage:frame.terminal_phase?.page==='results'||frame.result_page?.kind==='match-result',capturedAt:frame.capturedAt,image:frame.imagePath,frameMemory:frame.state?.captureEvidence?.frameMemory});
+    if(result.saved&&result.result_page){frame.result_page=result.result_page;this.lastMatchArchive=result.result_page;}
+    return result;
+  }
   async sendClick(observation,center,targetKind="ui"){
+    this.assertNotAborted();
     if(this.modalOutput)throw freshObservationRequired('Central dialog has input priority');
     const epoch=this.outputEpoch??0,transaction={queued:false};
     try{return await this.withOutputLock(()=>this.sendClickUnlocked(observation,center,epoch,transaction,targetKind));}
@@ -492,8 +549,10 @@ export class ClientAdapter {
     const epoch=this.outputEpoch??0;
     const previous=this.outputLock??Promise.resolve();
     const current=previous.catch(()=>{}).then(async()=>{
+      this.assertNotAborted();
       if(this.modalOutput)throw freshObservationRequired('Central dialog has input priority');
       if(this.priorityOutput)await this.priorityOutput;
+      this.assertNotAborted();
       if(epoch!==(this.outputEpoch??0))throw freshObservationRequired('Queued input cancelled by priority title click');
       return action();
     });
@@ -501,10 +560,11 @@ export class ClientAdapter {
     try{return await current;}finally{if(this.outputLock===current)this.outputLock=null;}
   }
   async clickRecovery(action){
-    if(this.modalOutput)return false;
+    if(this.modalOutput||this.aborted||this.abortSignal?.aborted)return false;
     return action();
   }
   async dismissModal(state){
+    if(this.aborted||this.abortSignal?.aborted)return false;
     if(this.modalOutput)return this.modalOutput;
     const dialog=state.captureEvidence?.modalConfirm,shot=state.screenshots?.[0];
     if(!dialog?.verified||!shot)return false;
@@ -569,8 +629,10 @@ export class ClientAdapter {
     }
   }
   async sendClickUnlocked(observation,center,epoch=this.outputEpoch??0,transaction={queued:false},targetKind="ui"){
+    this.assertNotAborted();
     if(observation!==this.latest)throw freshObservationRequired('Input observation already consumed');
     await this.prepareOutput();
+    this.assertNotAborted();
     if(epoch!==(this.outputEpoch??0))throw freshObservationRequired('Input cancelled by priority title click');
     let req;
     // Calculation time alone does not invalidate a decision. Keep its bound
@@ -599,7 +661,7 @@ export class ClientAdapter {
         error.message='AHK output interrupted; queue retired; reacquire current frame; cause: '+cause;
         error.outputOutcomeUnknown=true;
       }
-      if(/\trejected\t(?:cursor_snapshot_failed|foreground_lost_before_click|click_target_not_foreground|focus_or_pointer_changed_before_down|activation_failed|expired_after_activation|expired_or_excessive_deadline|expired_before_message|window_size_changed|coordinate_out_of_bounds|target_window_not_unique|target_window_closed|target_window_minimized|background_message_failed:\d+|background_control_click_failed:[^\r\n]+|virtual_pointer_failed:[^\r\n]+|virtual_pointer_helper_missing|invalid_field_count|invalid_sequence_fields|invalid_or_duplicate_id|unsupported_action|unhandled_worker_error:[^\r\n]+)$/.test(error.message)){
+      if(/\trejected\t(?:cursor_snapshot_failed|foreground_lost_before_click|click_target_not_foreground|focus_or_pointer_changed_before_down|activation_failed|expired_after_activation|expired_or_excessive_deadline|expired_before_message|window_size_changed|coordinate_out_of_bounds|target_window_not_unique|target_window_closed|target_window_minimized|background_activate_failed:\d+|background_message_failed:\d+|background_control_click_failed:[^\r\n]+|virtual_pointer_failed:[^\r\n]+|virtual_pointer_helper_missing|invalid_field_count|invalid_sequence_fields|invalid_or_duplicate_id|unsupported_action|unhandled_worker_error:[^\r\n]+)$/.test(error.message)){
         error.inputNotSent=true;
         if(this.call)this.call.uncertain=false;
       }

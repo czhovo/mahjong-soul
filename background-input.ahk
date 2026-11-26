@@ -175,17 +175,130 @@ ClientMouseButton(hwnd, x, y, down) {
         throw Error("background_message_failed:" A_LastError)
 }
 
+SilentWindowActivate(hwnd, active) {
+    CheckBackgroundTarget(hwnd)
+    ; Deliver WM_ACTIVATE (WA_ACTIVE=1 / WA_INACTIVE=0) directly to Unity's WndProc without
+    ; calling SetForegroundWindow/WinActivate. Unity updates Application.isFocused and
+    ; EventSystem.m_HasFocus so UGUI buttons & toggles fire onClick in the background
+    ; without stealing OS foreground focus, raising Z-order, or moving the physical cursor.
+    if active {
+        reply := Buffer(A_PtrSize, 0)
+        if !DllCall("user32\SendMessageTimeoutW", "Ptr", hwnd, "UInt", 0x0006, "UPtr", 1, "Ptr", 0, "UInt", 3, "UInt", 750, "Ptr", reply, "Ptr")
+            throw Error("background_activate_failed:" A_LastError)
+    } else {
+        ; Use SendNotifyMessageW (NOT PostMessageW): cross-thread SendNotifyMessageW returns
+        ; immediately without blocking during scene loads, while staying in the Win32
+        ; sent-message queue in strict FIFO order with subsequent SendMessageTimeoutW(WA_ACTIVE)
+        ; and real OS foreground activations (preventing sent-before-posted reordering).
+        if !DllCall("user32\SendNotifyMessageW", "Ptr", hwnd, "UInt", 0x0006, "UPtr", 0, "Ptr", 0, "Int")
+            throw Error("background_deactivate_failed:" A_LastError)
+        ; Unity's WndProc calls SetFocus(hwnd) on WM_ACTIVATE(WA_ACTIVE), which leaves the
+        ; game thread's THREADINFO->hwndActive/hwndFocus stuck on hwnd even after WA_INACTIVE.
+        ; Clear that background thread-active state via an invisible HWND_MESSAGE window so a
+        ; later minimized restore (SW_SHOWNOACTIVATE) never steals OS foreground focus.
+        ClearBackgroundThreadActive(hwnd)
+    }
+}
+
+GetMessageOnlyDummyWindow() {
+    global silentMessageDummyHwnd
+    if IsSet(silentMessageDummyHwnd) && silentMessageDummyHwnd && DllCall("user32\IsWindow", "Ptr", silentMessageDummyHwnd, "Int")
+        return silentMessageDummyHwnd
+    ; WS_EX_NOACTIVATE (0x08000000) + WS_DISABLED (0x08000000) + HWND_MESSAGE (-3):
+    ; invisible disabled message-only window that clears gameTid's THREADINFO->hwndActive
+    ; via SetActiveWindow without ever becoming the OS foreground window.
+    silentMessageDummyHwnd := DllCall("user32\CreateWindowExW", "UInt", 0x08000000, "Str", "STATIC", "Str", "", "UInt", 0x08000000, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "Ptr", -3, "Ptr", 0, "Ptr", 0, "Ptr", 0, "Ptr")
+    return silentMessageDummyHwnd
+}
+
+ClearBackgroundThreadActive(hwnd) {
+    if !DllCall("user32\IsWindow", "Ptr", hwnd, "Int")
+        return
+    if DllCall("user32\GetForegroundWindow", "Ptr") = hwnd
+        return
+    gameTid := DllCall("user32\GetWindowThreadProcessId", "Ptr", hwnd, "Ptr", 0, "UInt")
+    myTid := DllCall("kernel32\GetCurrentThreadId", "UInt")
+    if !gameTid || gameTid = myTid
+        return
+    ; Check GetGUIThreadInfo first; skip AttachThreadInput when already clean.
+    gtiSize := A_PtrSize = 8 ? 72 : 48
+    gti := Buffer(gtiSize, 0)
+    NumPut("UInt", gtiSize, gti, 0)
+    if DllCall("user32\GetGUIThreadInfo", "UInt", gameTid, "Ptr", gti, "Int") {
+        activeOff := 8
+        focusOff := activeOff + A_PtrSize
+        if NumGet(gti, activeOff, "Ptr") != hwnd && NumGet(gti, focusOff, "Ptr") != hwnd
+            return
+    }
+    dummy := GetMessageOnlyDummyWindow()
+    if !dummy
+        return
+    if DllCall("user32\GetForegroundWindow", "Ptr") = hwnd
+        return
+    if DllCall("user32\AttachThreadInput", "UInt", myTid, "UInt", gameTid, "Int", true, "Int") {
+        try {
+            if DllCall("user32\GetForegroundWindow", "Ptr") != hwnd {
+                DllCall("user32\SetActiveWindow", "Ptr", dummy, "Ptr")
+                DllCall("user32\SetFocus", "Ptr", 0, "Ptr")
+            }
+        } finally {
+            DllCall("user32\AttachThreadInput", "UInt", myTid, "UInt", gameTid, "Int", false, "Int")
+        }
+    }
+}
+
+GetWindowExStyle(hwnd) {
+    fn := A_PtrSize = 8 ? "user32\GetWindowLongPtrW" : "user32\GetWindowLongW"
+    return DllCall(fn, "Ptr", hwnd, "Int", -20, "Ptr")
+}
+
+SetWindowExStyle(hwnd, style) {
+    fn := A_PtrSize = 8 ? "user32\SetWindowLongPtrW" : "user32\SetWindowLongW"
+    return DllCall(fn, "Ptr", hwnd, "Int", -20, "Ptr", style, "Ptr")
+}
+
 RestoreWithoutActivation(hwnd) {
     if !DllCall("user32\IsWindow", "Ptr", hwnd, "Int")
         throw Error("target_window_closed")
     if !DllCall("user32\IsIconic", "Ptr", hwnd, "Int")
         return
-    ; SW_SHOWNOACTIVATE restores visibility without requesting foreground focus.
-    DllCall("user32\ShowWindowAsync", "Ptr", hwnd, "Int", 4, "Int")
+    ; Clear any stale background THREADINFO->hwndActive before un-minimizing so
+    ; SW_SHOWNOACTIVATE never promotes the restored window to OS foreground.
+    ClearBackgroundThreadActive(hwnd)
+    origEx := GetWindowExStyle(hwnd)
+    addedNoActivate := !(origEx & 0x08000000)
+    if addedNoActivate
+        SetWindowExStyle(hwnd, origEx | 0x08000000)
+    try {
+        DllCall("user32\ShowWindowAsync", "Ptr", hwnd, "Int", 4, "Int")
+        client := Buffer(16, 0)
+        restored := false
+        Loop 20 {
+            if !DllCall("user32\IsIconic", "Ptr", hwnd, "Int")
+                && DllCall("user32\GetClientRect", "Ptr", hwnd, "Ptr", client, "Int")
+                && NumGet(client, 8, "Int") > 0 && NumGet(client, 12, "Int") > 0 {
+                restored := true
+                break
+            }
+            Sleep 50
+        }
+        if !restored
+            throw Error("target_window_minimized")
+        DllCall("user32\SetWindowPos", "Ptr", hwnd, "Ptr", 1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x0013, "Int")
+    } finally {
+        if addedNoActivate && DllCall("user32\IsWindow", "Ptr", hwnd, "Int")
+            SetWindowExStyle(hwnd, origEx)
+    }
+}
+
+MinimizeWithoutActivation(hwnd) {
+    if !DllCall("user32\IsWindow", "Ptr", hwnd, "Int") || DllCall("user32\IsIconic", "Ptr", hwnd, "Int")
+        return
+    ; SW_SHOWMINNOACTIVE (7) minimizes without activating another window or shifting focus.
+    DllCall("user32\ShowWindowAsync", "Ptr", hwnd, "Int", 7, "Int")
     Loop 20 {
-        if !DllCall("user32\IsIconic", "Ptr", hwnd, "Int")
+        if DllCall("user32\IsIconic", "Ptr", hwnd, "Int")
             return
         Sleep 50
     }
-    throw Error("target_window_minimized")
 }

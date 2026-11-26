@@ -1,44 +1,74 @@
-CaptureClickContext(hwnd) {
-    pos := Buffer(8)
-    if !DllCall("user32\GetCursorPos", "Ptr", pos, "Int")
-        throw Error("cursor_snapshot_failed")
-    return {previous: DllCall("user32\GetForegroundWindow", "Ptr"), cursor: pos, minimized: DllCall("user32\IsIconic", "Ptr", hwnd, "Int")}
-}
-
-ActivateClickWindow(hwnd) {
-    target := "ahk_id " hwnd
-    if !WinActive(target) {
-        try WinActivate target
-        catch
-            throw Error("click_target_not_foreground")
-        if !WinWaitActive(target,, 0.4)
-            throw Error("click_target_not_foreground")
-    }
-}
-
-RestoreClickContext(hwnd, ctx) {
+; Silent background startup probe: verifies virtual-pointer coordinate delivery,
+; silent WM_ACTIVATE activation/deactivation, clean background thread-active state,
+; unchanged physical cursor, and zero OS foreground theft.
+StartupFocusProbe(hwnd) {
+    before := DllCall("user32\GetForegroundWindow", "Ptr")
+    wasMinimized := DllCall("user32\IsIconic", "Ptr", hwnd, "Int")
+    cursorBefore := Buffer(8, 0)
+    hasCursorBefore := DllCall("user32\GetCursorPos", "Ptr", cursorBefore, "Int")
+    silentActivated := false
+    stolenDuringRestore := false
     try {
-        ; Do not take focus away from a third window selected during the click.
-        ; Skip immediately if the previous foreground window no longer exists,
-        ; is hidden, or is minimized to avoid pointless focus-wait stalls.
-        ownsFocus := WinActive("ahk_id " hwnd)
-        prevValid := ctx.previous && ctx.previous != hwnd
-            && DllCall("user32\IsWindow", "Ptr", ctx.previous, "Int")
-            && DllCall("user32\IsWindowVisible", "Ptr", ctx.previous, "Int")
-            && !DllCall("user32\IsIconic", "Ptr", ctx.previous, "Int")
-        if ownsFocus && prevValid {
-            WinActivate "ahk_id " ctx.previous
-            if !WinWaitActive("ahk_id " ctx.previous,, 0.18)
-                throw Error("previous_foreground_not_restored")
+        RestoreWithoutActivation(hwnd)
+        if before != hwnd && DllCall("user32\GetForegroundWindow", "Ptr") = hwnd
+            stolenDuringRestore := true
+        WinGetClientPos , , &width, &height, "ahk_id " hwnd
+        if width <= 0 || height <= 0
+            throw Error("invalid_client_size")
+        probeX := Round(width * 0.03), probeY := Round(height * 0.94)
+        if DllCall("user32\GetForegroundWindow", "Ptr") != hwnd {
+            VirtualPointerCommand("--set", hwnd, probeX, probeY)
+            SilentWindowActivate(hwnd, true)
+            silentActivated := true
+            Sleep 30
         }
+        ; Exercise silent activation + virtual-pointer coordinate delivery without pressing a game button.
+        ClientMouseMessage(hwnd, 0x200, probeX, probeY)
     } finally {
-        try {
-            if ctx.minimized && WinExist("ahk_id " hwnd)
-                WinMinimize "ahk_id " hwnd
-        } finally {
-            if !DllCall("user32\SetCursorPos", "Int", NumGet(ctx.cursor, 0, "Int"), "Int", NumGet(ctx.cursor, 4, "Int"), "Int")
-                throw Error("cursor_not_restored")
+        if silentActivated
+            && DllCall("user32\IsWindow", "Ptr", hwnd, "Int")
+            && !DllCall("user32\IsIconic", "Ptr", hwnd, "Int")
+            && DllCall("user32\GetForegroundWindow", "Ptr") != hwnd {
+            try SilentWindowActivate(hwnd, false)
+        }
+        if wasMinimized && WinExist("ahk_id " hwnd)
+            MinimizeWithoutActivation(hwnd)
+    }
+    after := DllCall("user32\GetForegroundWindow", "Ptr")
+    if stolenDuringRestore || (before != hwnd && after = hwnd)
+        throw Error("startup_focus_stolen")
+    if DllCall("user32\IsIconic", "Ptr", hwnd, "Int") != wasMinimized
+        throw Error("startup_window_state_not_restored")
+    cursorAfter := Buffer(8, 0)
+    cursorPreserved := 1
+    if hasCursorBefore && DllCall("user32\GetCursorPos", "Ptr", cursorAfter, "Int") {
+        dx := Abs(NumGet(cursorAfter, 0, "Int") - NumGet(cursorBefore, 0, "Int"))
+        dy := Abs(NumGet(cursorAfter, 4, "Int") - NumGet(cursorBefore, 4, "Int"))
+        ; Allow small organic user mouse movement during probe; assert no jump into game probe point.
+        if dx > 2 && dy > 2 {
+            pt := Buffer(8, 0)
+            NumPut("Int", probeX, pt, 0), NumPut("Int", probeY, pt, 4)
+            if DllCall("user32\ClientToScreen", "Ptr", hwnd, "Ptr", pt, "Int") {
+                if Abs(NumGet(cursorAfter, 0, "Int") - NumGet(pt, 0, "Int")) <= 3 && Abs(NumGet(cursorAfter, 4, "Int") - NumGet(pt, 4, "Int")) <= 3
+                    cursorPreserved := 0
+            }
         }
     }
+    if !cursorPreserved
+        throw Error("startup_cursor_moved")
+    threadClean := 1
+    if after != hwnd {
+        gameTid := DllCall("user32\GetWindowThreadProcessId", "Ptr", hwnd, "Ptr", 0, "UInt")
+        gtiSize := A_PtrSize = 8 ? 72 : 48
+        gti := Buffer(gtiSize, 0)
+        NumPut("UInt", gtiSize, gti, 0)
+        if gameTid && DllCall("user32\GetGUIThreadInfo", "UInt", gameTid, "Ptr", gti, "Int") {
+            activeOff := 8, focusOff := activeOff + A_PtrSize
+            if NumGet(gti, activeOff, "Ptr") = hwnd || NumGet(gti, focusOff, "Ptr") = hwnd
+                threadClean := 0
+        }
+    }
+    if !threadClean
+        throw Error("startup_thread_active_not_cleared")
+    return "startup_focus_verified;mode=silent_activate;hwnd=" hwnd ";before=" before ";after=" after ";cursor_preserved=1;thread_clean=1;window_state_restored=1"
 }
-

@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {engineExchange} from './engine-exchange.mjs';
 import {decisionPolicy,selectDecision} from './action-policy.mjs';
 import {parseDecisionTelemetry} from './decision-telemetry.mjs';
-import {GAME,remainingHands} from './game-rules.mjs';
+import {GAME,remainingHands,extensionFlags} from './game-rules.mjs';
 import {annotateDiscardRequests} from './discard-evidence.mjs';
 import {appendEvidence} from './background-evidence.mjs';
 import {verifyEngineBuild} from './engine-builds.mjs';
@@ -111,6 +111,12 @@ export class TingfengSession {
         input.match_context.hand_index=GAME.players*r.wind+r.hand_number.value;
         input.match_context.remaining_scheduled_hands=remainingHands(r.wind,r.hand_number.value);
         input.match_context.is_last_scheduled_hand=input.match_context.remaining_scheduled_hands===1;
+        Object.assign(input.match_context,extensionFlags(r.wind,r.hand_number.value));
+      }
+    }else if(input.match_context){
+      const r=this.discardObservation?.round;
+      if(Number.isInteger(r?.wind)&&Number.isInteger(r?.hand_number?.value)){
+        input.match_context={...input.match_context,...extensionFlags(r.wind,r.hand_number.value)};
       }
     }
     assertVisibleHand(nextLedger,visibleHand);

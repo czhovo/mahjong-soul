@@ -19,7 +19,7 @@ export async function prepareResident(args){
  const {GAME}=await import('./game-rules.mjs');
  if(GAME.sanma!==sanma)throw Error('不能在同一运行进程内切换场次');
  const {runResident}=await import('./resident-core.mjs');
- return {runResident,options:{...config,naku:cli.naku===true,lagRecovery:cli.lagRecovery===true,briefPostMatch:cli.briefPostMatch,goldRoom:cli.goldRoom===true,jadeRoom:cli.jadeRoom===true,singleMatch:cli.singleMatch,shortOnly:cli.shortOnly===true,saveAllScreenshots:cli.saveAllScreenshots,startupArgs:args}};
+ return {runResident,options:{...config,naku:cli.naku===true,room:cli.room,autoStart:cli.autoStart===true,fastStart:cli.fastStart===true,briefPostMatch:cli.briefPostMatch,goldRoom:cli.goldRoom===true,jadeRoom:cli.jadeRoom===true,singleMatch:cli.singleMatch,shortOnly:cli.shortOnly===true,saveAllScreenshots:cli.saveAllScreenshots,startupArgs:args}};
 }
 export async function launchResident(args){
  const {runResident,options}=await prepareResident(args);

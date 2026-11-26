@@ -101,8 +101,9 @@ for line in sys.stdin:
                 active_text_key=text_key
                 text_work=(bgr.copy(),dict(modal_confirm),text_identity)
             if text_key==active_text_key:modal_confirm['modalTextId']=text_identity
+        fg_hwnd=int(u.GetForegroundWindow() or 0)
         result={'id':request['id'],'path':str(path) if path else None,'width':image.width,'height':image.height,
-                'capturedAt':captured,'captureMs':capture_ms,'captureBackend':'wgc','sourceTimestamp100ns':window_pixels.source_timestamp,'pixelsReused':reused,'discardMotion':motion,'discardMotionMs':motion_ms,'discardMotionError':motion_error,'frameMemory':memory,'centralPixelSignature':central_signature(image),'modalConfirm':modal_confirm,'writeMs':0,'timeReserve':timer}
+                'capturedAt':captured,'captureMs':capture_ms,'captureBackend':'wgc','windowForeground':bool(fg_hwnd==hwnd),'sourceTimestamp100ns':window_pixels.source_timestamp,'pixelsReused':reused,'discardMotion':motion,'discardMotionMs':motion_ms,'discardMotionError':motion_error,'frameMemory':memory,'centralPixelSignature':central_signature(image),'modalConfirm':modal_confirm,'writeMs':0,'timeReserve':timer}
     except Exception as error:result={'id':request.get('id'),'error':str(error)}
     emit(result)
     if text_work:text_job=text_pool.submit(modal_text_job,*text_work)

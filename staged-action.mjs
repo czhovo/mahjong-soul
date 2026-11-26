@@ -14,7 +14,7 @@ import {verifyKongDraw} from './kong-transition.mjs';
 import {trackOccludedRivers,RiverObservationCache,MeldObservationCache} from './river-tracking.mjs';
 import {postCallAnchor} from './post-call-anchor.mjs';
 import {retryUnchangedRiichi} from './riichi-recovery.mjs';
-import {changedRound,conflictingRound} from './round-boundary.mjs';
+import {changedRound,conflictingRound,roundIdentity,AbnormalBoundaryTracker} from './round-boundary.mjs';
 import {sameReactionWindow,samePassPrompt} from './reaction-window.mjs';
 import {unchangedDiscard} from './unchanged-discard.mjs';
 
@@ -51,8 +51,20 @@ async function advanceStage(adapter,session,pending){
  const selecting=kind==='LIZHI'?sequence.phase==='selection':!kong&&['await_meld','await_choice_effect'].includes(sequence.phase);
  const meldCount=pending.before.hand.meld_count+(['LIZHI','BUGANG','KITA'].includes(kind)?0:1);
  const frame=await adapter.inspect({meld_count:meldCount,phase:'auto',auto_meld_count:true,observeSettlement:true,...(kind==='LIZHI'?{readTableScores:true}:{}),...(selecting||retryDiscard||call.riichiBatch?{selection_overlay:kind==='LIZHI'?'riichi':'post_call'}:{})});
- if(!frame.settlement?.complete&&frame.terminal_phase?.name!=='match_end'&&conflictingRound(pending.before,frame))
-  return {status:'waiting_round_frame',frame:frame.id};
+ pending.latest=frame;
+ pending.boundaryTracker??=new AbnormalBoundaryTracker(pending.boundaryOptions);
+ if(frame.terminal_phase?.name==='match_end')return {status:'match_ended',frame:frame.id,pendingAction:pending.decision.output.response};
+ if(frame.settlement?.complete||frame.result_page?.kind==='own-win-settlement'){
+  pending.boundaryTracker.markSettlement();
+  return {status:'waiting_special_settlement',frame:frame.id};
+ }
+ const boundary=changedRound(pending.before,frame);
+ if(boundary)return {status:'round_boundary',frame:frame.id,...boundary,pendingAction:pending.decision.output.response};
+ const abnormal=pending.boundaryTracker.observe(pending.before,frame,{resetBaseline:pending.discardBefore??pending.before});
+ if(abnormal){
+  if(abnormal.status==='waiting_round_frame')return abnormal;
+  return {...abnormal,pendingAction:pending.decision.output.response};
+ }
  // Retained history is useful for continuity, but must not manufacture proof
  // that our attempted call actually became a new own meld in this frame.
  const observedOwnMelds=structuredClone(frame.own_melds);
@@ -65,10 +77,6 @@ async function advanceStage(adapter,session,pending){
  if(pending.discardBefore)Object.assign(pending.discardBefore,pending.meldObservations.apply(pending.discardBefore));
  Object.assign(frame,pending.meldObservations.apply(frame));
  pending.latest=frame;
- if(frame.terminal_phase?.name==='match_end')return {status:'match_ended',frame:frame.id,pendingAction:pending.decision.output.response};
- if(frame.settlement?.complete)return {status:'waiting_special_settlement',frame:frame.id};
- const boundary=changedRound(pending.before,frame);
- if(boundary)return {status:'round_boundary',frame:frame.id,...boundary,pendingAction:pending.decision.output.response};
  if(kind==='ANGANG'&&pending.decision.riichiKongPrompt&&frame.own_melds?.complete&&!frame.own_melds.tracking){
   // After riichi the replacement tile can be discarded before the next capture.
   // The added concealed kong itself proves this action; no replacement click is needed.
@@ -266,7 +274,8 @@ async function advanceStage(adapter,session,pending){
    try{
     const receipt=await adapter.continueCall(frame,{retryInput:true,verified:true,observationId:frame.id,seats:frame.round.seat_identity.seats,melds:canonicalMelds(frame,'self',frame.own_melds)});
     if(discard)pending.lastDiscardRetryAt=performance.now();
-    return {status:'special_button_retried',frame:frame.id,receipt,totalMs:performance.now()-pending.started};
+    pending.buttonRetryCount=(pending.buttonRetryCount??0)+1;
+    return {status:'special_button_retried',frame:frame.id,receipt,retryCount:pending.buttonRetryCount,totalMs:performance.now()-pending.started};
    }catch(error){
     // Restore phase if the retry was rejected before click (inputNotSent), so an
     // already-sent earlier click can still confirm cleanly without corrupting phase.

@@ -1,6 +1,8 @@
 import {HandContinuity} from './hand-continuity.mjs';
 import {appendEvidence} from './background-evidence.mjs';
-import {GAME,remainingHands} from './game-rules.mjs';
+import {GAME,remainingHands,extensionFlags} from './game-rules.mjs';
+import {reportSavedScreenshot} from './screenshot-log.mjs';
+import {reportMatchResult} from './match-result-log.mjs';
 import {mkdir,writeFile,open,unlink} from 'node:fs/promises';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -22,12 +24,13 @@ import {acquireProcessLock} from './process-lock.mjs';
 import {MatchContinuation} from './match-continuation.mjs';
 import {StartFlow,startActionName} from './start-flow.mjs';
 import {restartGame} from './restart-game.mjs';
+import {WindowsNotifier} from './windows-notify.mjs';
 
 const ROOT=dirname(fileURLToPath(import.meta.url));
 export function pollDelay(elapsed,pollMs=250){return Math.max(0,pollMs-elapsed);}
 const positions=GAME.positions;
 const quietProgressMessages=new Set([
- '雀魂已在前台，正在识别局面','已进入对局，正在识别当前局面',
+ '已连接雀魂窗口，正在识别局面','已进入对局，正在识别当前局面',
  '正在确认当前局面','已接入本局，等待首个可操作时点',
  '局面尚未识别完整，继续识别当前局','局面暂未识别清楚，继续识别当前局',
  '正在恢复当前局面','正在估计点数并恢复当前局面','正在读取结算',
@@ -60,6 +63,7 @@ export function initialContext(r,scores){
  const advance=r.hand-1; // Four rounds per wind preserve the same modulo-four priority.
  return {schema:1,scores,riichi_sticks:0,honba:r.honba,hand_index:r.hand,
   remaining_scheduled_hands:remainingHands(r.wind,r.hand),is_last_scheduled_hand:remainingHands(r.wind,r.hand)===1,
+  ...extensionFlags(r.wind,r.hand),
   tie_priority:GAME.seats.map(s=>(s-advance+GAME.players)%GAME.players),source:'resident-observed-opening'};
 }
 export class WaitingState{
@@ -99,6 +103,31 @@ export class WaitingState{
  }
 }
 
+export function attachStopAfterMatchShortcut({stdin=process.stdin,onStopAfterMatch=()=>{},onInterrupt=()=>{}}={}){
+ if(!stdin||typeof stdin.on!=='function')return ()=>{};
+ const isTty=stdin.isTTY===true;
+ const canRaw=isTty&&typeof stdin.setRawMode==='function';
+ if(!isTty&&stdin===process.stdin)return ()=>{};
+ const wasRaw=Boolean(stdin.isRaw);
+ const onData=chunk=>{
+  const buf=Buffer.isBuffer(chunk)?chunk:Buffer.from(String(chunk),'utf8');
+  for(const byte of buf){
+   if(byte===0x03)onInterrupt('SIGINT');
+   else if(byte===0x13)onStopAfterMatch();
+  }
+ };
+ try{if(canRaw)stdin.setRawMode(true);}catch{}
+ stdin.on('data',onData);
+ stdin.resume?.();
+ stdin.unref?.();
+ return ()=>{
+  stdin.off?.('data',onData);
+  stdin.removeListener?.('data',onData);
+  try{if(canRaw)stdin.setRawMode(wasRaw);}catch{}
+  try{stdin.pause?.();}catch{}
+ };
+}
+
 export async function runResident(options={}){
  const engine=await verifyEngineBuild(options.shortOnly?SHORT_EXECUTABLE:(options.executable??DEFAULT_EXECUTABLE));
  const autoRematch=options.autoRematch??true;
@@ -118,18 +147,41 @@ export async function runResident(options={}){
  const discover=services.discover??(()=>{if(!discovery||discovery.error){discovery?.close();discovery=new WindowDiscovery(options.python);}return discovery.discover();});
  const makeCapture=services.makeCapture??((w,p)=>new NativeCapture(w,{transientPath:p,saveAllScreenshots:options.saveAllScreenshots}));
  const adapterFactory=services.makeAdapter??((c,w)=>new ClientAdapter({get_window_state:()=>c.capture()},w));
- const makeAdapter=(c,w)=>{const adapter=adapterFactory(c,w);adapter.naku=options.naku===true;adapter.searchBudget=SearchBudget.forEngine(engine);adapter.onModalStatus=message=>log.line(message);return adapter;};
+ const makeAdapter=(c,w)=>{const adapter=adapterFactory(c,w);adapter.bindAbortSignal?.(signal);adapter.naku=options.naku===true;adapter.searchBudget=SearchBudget.forEngine(engine);adapter.onModalStatus=message=>log.line(message);adapter.onSavedScreenshot=message=>log.line(message,false,'result');return adapter;};
  const play=services.play??runLiveHand;
- const continuation=services.continuation??new MatchContinuation({allowRematch:autoRematch!==false,brief:options.briefPostMatch===true,onRecovery:(action,seconds=10)=>status(`终局操作${seconds}秒未推进，已重试上一个动作：${{CONFIRM:'确认',REMATCH:'再来一场',REMATCH_CONFIRM:'确认再来一场',EXIT:'确认退出'}[action]}`,{},false)});
- const startFlow=services.startFlow??new StartFlow({bronze:options.briefPostMatch===true,gold:options.goldRoom===true,jade:options.jadeRoom===true,onRecovery:(action,seconds=10)=>status(`开局操作${seconds}秒未推进，已重试上一个动作：${startActionName[action]}`,{},false)});
+ const notifier=services.notifier??options.notifier??new WindowsNotifier();
+ const continuation=services.continuation??new MatchContinuation({allowRematch:autoRematch!==false,brief:options.briefPostMatch===true,onRecovery:(action,seconds=10)=>{
+  const label={CONFIRM:'确认',REMATCH:'再来一场',REMATCH_CONFIRM:'确认再来一场',REMATCH_CANCEL:'取消再来一局',EXIT:'确认退出'}[action]??action;
+  notifier.notifyRetryFailure({action,reason:`终局操作${seconds}秒未推进，已重试：${label}`,key:`retry:postmatch:${action}`});
+  return status(`终局操作${seconds}秒未推进，已重试上一个动作：${label}`,{},false);
+ }});
+ let stopAfterMatch=false;
+ const onStopAfterMatch=()=>{
+  stopAfterMatch=!stopAfterMatch;
+  continuation.setStopAfterMatch?.(stopAfterMatch);
+  log.line(stopAfterMatch?'本场结束后不再继续':'已撤销，本场结束后将继续');
+ };
+ const detachShortcut=attachStopAfterMatchShortcut({
+  stdin:options.stdin??process.stdin,
+  onStopAfterMatch,
+  onInterrupt:stop,
+ });
+ const startFlow=services.startFlow??new StartFlow({bronze:options.briefPostMatch===true,gold:options.goldRoom===true,jade:options.jadeRoom===true,onRecovery:(action,seconds=10)=>{
+  const label=startActionName[action]??action;
+  notifier.notifyRetryFailure({action,reason:`开局操作${seconds}秒未推进，已重试：${label}`,key:`retry:startflow:${action}`});
+  return status(`开局操作${seconds}秒未推进，已重试上一个动作：${label}`,{},false);
+ }});
  const base=resolve(options.directory??join(GAME.runtimeRoot??ROOT,'test-evidence/resident'));
  await mkdir(base,{recursive:true});await mkdir(join(GAME.runtimeRoot??ROOT,'queue'),{recursive:true});
  const lockPath=services.lockPath??join(GAME.runtimeRoot??ROOT,'queue/resident.lock'),lock=await acquireProcessLock(lockPath,String(process.pid));
+ const fastStart=options.fastStart===true||options.singleMatch===true;
+ const hasRoom=options.autoStart===true||options.briefPostMatch===true||options.goldRoom===true||options.jadeRoom===true||
+  options.startupArgs?.some(a=>['-b','-s','-g','-t'].includes(a))===true;
  let capture,adapter,bound,stateWindowId,state=new WaitingState(options.initialScores),runNumber=0,foregroundId=null,matchCompleted=false,postMatchFlow=false,startupFailure=null;
  const statusLog=new ResidentStatusLog(log);
  let lastStatusEvidence=null;
  const status=async(message,extra={},waiting=true)=>{
-  const group=message==='正在通过 AutoHotkey 恢复并激活雀魂窗口'||message.startsWith('等待恢复：')?'window-recovery':null;
+  const group=message==='正在恢复雀魂窗口（不激活）'||message.startsWith('等待恢复：')?'window-recovery':null;
   statusLog.set(message,waiting,group);
   const evidenceKey=JSON.stringify([message,extra.reason,extra.code]);
   if(evidenceKey!==lastStatusEvidence){
@@ -140,11 +192,12 @@ export async function runResident(options={}){
  };
  const handContinuity=new HandContinuity();
  const entryProgress=new OpeningEntryProgress();
+ let retainedMatchArchive=null;
  let restartFromLobby=false;
  let plainLobbySince=null;
- const close=async()=>{try{await adapter?.close();}finally{try{await capture?.close();}finally{adapter=null;capture=null;bound=null;}}};
+ const close=async()=>{if(adapter?.lastMatchArchive)retainedMatchArchive=adapter.lastMatchArchive;try{await adapter?.close();}finally{try{await capture?.close();}finally{adapter=null;capture=null;bound=null;}}};
  try{
-  await status('等待进入对局');
+  await status(fastStart?'快速接管模式：直接识别当前局面':(hasRoom?'准备进入开局流程':'等待进入对局'));
   while(!signal.aborted){
    const cycleStart=performance.now();
    try{
@@ -159,13 +212,24 @@ export async function runResident(options={}){
     }
     else{
      if(foregroundId!==window.id){foregroundId=window.id;await status('已连接雀魂窗口，正在识别局面');}
-     if(bound?.id!==window.id){await close();if(stateWindowId!==window.id){state=new WaitingState(options.initialScores);stateWindowId=window.id;}capture=makeCapture(window,join(base,'waiting-frame.bmp'));
-      adapter=makeAdapter(capture,window);await Promise.all([capture.ready,adapter.ready]);bound=window;}
+     if(bound?.id!==window.id){await close();if(stateWindowId!==window.id){state=new WaitingState(options.initialScores);stateWindowId=window.id;}notifier.setWindow(window);capture=makeCapture(window,join(base,'waiting-frame.bmp'));
+      adapter=makeAdapter(capture,window);adapter.restoreMatchArchive=retainedMatchArchive;await Promise.all([capture.ready,adapter.ready]);bound=window;}
      const waitingRematch=continuation.previousAction?.action==='REMATCH_CONFIRM';
      const probe=await adapter.inspect({phase:postMatchFlow?'post_match':'probe',...(postMatchFlow?{afterRematch:continuation.previousAction?.action==='REMATCH'}:{readOpening:true,auto_meld_count:true,readTableScores:true,...(waitingRematch?{checkPostMatchLobby:true}:{})}),persistEvidence:false});
+     let matchResultText;reportMatchResult(probe,text=>{matchResultText=text;});
+     if(matchResultText){
+      await status(matchResultText,{},false);
+      notifier.notifyMatchEnded({matchKey:`result:${runNumber}:${matchResultText}`,summary:matchResultText,frame:probe});
+     }
+     let screenshotText;reportSavedScreenshot(probe.result_page?.screenshot,text=>{screenshotText=text;});
+     if(screenshotText)await status(screenshotText,{},false);
+     for(const path of probe.result_page?.additional_screenshots??[]){
+      let text;reportSavedScreenshot(path,value=>{text=value;});
+      if(text)await status(text,{},false);
+     }
      const returnedToLobby=(postMatchFlow||waitingRematch)&&probe.start_page?.page==='lobby'&&probe.start_page.controls?.RANK&&
       !Object.keys(probe.terminal_phase?.controls??{}).length;
-     if(returnedToLobby&&continuation.previousAction?.action==='REMATCH'){
+     if(returnedToLobby&&!stopAfterMatch&&continuation.previousAction?.action==='REMATCH'){
       // Keep looking for the dialog during the lobby's normal two-second
       // settling interval; one transitional frame must not cancel rematching.
       const at=probe.capturedAt??Date.now();
@@ -176,9 +240,9 @@ export async function runResident(options={}){
      }else plainLobbySince=null;
      if(returnedToLobby){
       plainLobbySince=null;
-      if(!autoRematch){matchCompleted=true;break;}
+      if(!autoRematch||stopAfterMatch){matchCompleted=true;break;}
       postMatchFlow=false;continuation.finish();state=new WaitingState(options.initialScores);
-      restartFromLobby=!options.singleMatch||options.startupArgs?.some(a=>['-b','-s','-g','-t'].includes(a))===true;
+      restartFromLobby=hasRoom;
       startFlow.reset();
       await status(restartFromLobby?'已返回大厅，重新进入开局流程':'已返回大厅，等待进入对局',{},false);
      }
@@ -208,11 +272,14 @@ export async function runResident(options={}){
       entryProgress.reset();
       handContinuity.clear();startFlow.finish();
       postMatchFlow=true;
-      if(autoRematch===false&&!options.finishResults){matchCompleted=true;break;}
+      if(stopAfterMatch)continuation.setStopAfterMatch?.(true);
+      if(!stopAfterMatch&&autoRematch===false&&!options.finishResults){matchCompleted=true;break;}
       const action=await continuation.step(probe,adapter);
       if(action==='FINISHED'){matchCompleted=true;break;}
+      let finalScreenshotText;reportSavedScreenshot(probe.result_page?.screenshot,text=>{finalScreenshotText=text;});
+      if(finalScreenshotText)await status(finalScreenshotText,{},false);
       if(action==='REMATCH_CONFIRM'){postMatchFlow=false;state=new WaitingState(options.initialScores);}
-      if(action)await status(`终局操作已发送：${{CONFIRM:'确认',REMATCH:'再来一局',REMATCH_CONFIRM:'确认',EXIT:'确认退出'}[action]}`,{},false);
+      if(action)await status(`终局操作已发送：${{CONFIRM:'确认',REMATCH:'再来一局',REMATCH_CONFIRM:'确认',REMATCH_CANCEL:'取消再来一局',EXIT:'确认退出'}[action]}`,{},false);
      }
      else if(phase==='in_game'){
       restartFromLobby=false;
@@ -240,6 +307,7 @@ export async function runResident(options={}){
        }
        if(!opening){
         const blocked=entryProgress.observe(frame,reason);
+        if(blocked)notifier.notifyBlocked({reason:`未接入对局：${reason}`,key:`blocked:entry:${reason}`,frame});
         await status(blocked?'未接入对局：'+reason:'局面尚未识别完整，继续识别当前局',{reason,code:error.code??'INCOMPLETE_OBSERVATION',
          entryBlocked:blocked,
          observationId:frame.id,capturedAt:frame.capturedAt,recognition:{round:frame.round,hand:frame.hand,dora:frame.dora,
@@ -249,55 +317,94 @@ export async function runResident(options={}){
       if(opening){
        entryProgress.reset();
        const round=roundIdentity(frame),directory=continuing?.directory??join(base,`${new Date().toISOString().replace(/[:.]/g,'-')}-${++runNumber}`);
-       const config={...opening,window,directory,executable:engine.executable,naku:options.naku===true,lagRecovery:options.lagRecovery===true,
+       const config={...opening,window,directory,executable:engine.executable,naku:options.naku===true,
         durationMs:options.durationMs??24*60*60*1000,maxActions:1000};
        await mkdir(directory,{recursive:true});await writeFile(join(directory,'config.json'),JSON.stringify(config,null,2),'utf8');
        await status('已接入本局，等待首个可操作时点',{directory},false);
        // Transfer the already-ready workers instead of restarting recognition at the first turn.
        capture.transientPath=null;
-       const runtime={capture,adapter,continuing,handContinuity,entryFrame:continuing?null:frame,reuseAfterMatch:true};capture=null;adapter=null;bound=null;
-       runtime.adapter.beginMatchArchive=!continuing;
-       let ended=false,rediscover=false;
-       try{const result=await play({...config,signal,runtime});ended=result.status==='match_ended';await status(ended?(autoRematch===false?'整场对局结束':'整场对局结束，准备处理结算页面'):'正在恢复当前局面',{directory,result},!ended);}
+       if(!continuing)notifier.resetMatch();
+       notifier.setWindow(window);
+       const runtime={capture,adapter,continuing,handContinuity,notifier,entryFrame:continuing?null:frame,reuseAfterMatch:true};capture=null;adapter=null;bound=null;
+       runtime.adapter.beginMatchArchive=!continuing;runtime.adapter.restoreMatchArchive=null;runtime.adapter.lastMatchArchive=null;retainedMatchArchive=null;
+       let ended=false,abnormalEnd=false,roundReset=false,endReason=null,rediscover=false;
+       try{
+        const result=await play({...config,signal,runtime});
+        ended=result.status==='match_ended';
+        abnormalEnd=ended&&result.abnormal===true;
+        roundReset=result.status==='round_reset';
+        endReason=result.reason??null;
+        const msg=abnormalEnd
+         ?(endReason==='returned_to_lobby'?'检测到已返回大厅（非正常终局）':'检测到已离开牌桌（非正常终局）')
+         :ended
+          ?(autoRematch===false&&!stopAfterMatch?'整场对局结束':'整场对局结束，准备处理结算页面')
+          :roundReset
+           ?'检测到新对局或非连续换局，重新接入当前局面'
+           :'正在恢复当前局面';
+        await status(msg,{directory,result},!ended&&!roundReset);
+        if(ended){
+         notifier.notifyMatchEnded({
+          matchKey:`match-end:${runNumber}`,
+          summary:abnormalEnd?msg:'整场对局结束',
+          frame:runtime.adapter?.latest??null,
+         });
+        }
+       }
        catch(error){
         if(error.code==='INPUT_HELPER_CONFLICT')throw error;
         rediscover=/rediscovery required|game restart required/.test(error.message);
         if(/game restart required/.test(error.message)&&!signal.aborted){
+         notifier.notifyBlocked({reason:'游戏画面连续60秒不变，正在自动重启雀魂',key:'blocked:restart-game'});
          await status('游戏画面连续60秒不变，正在重启雀魂',{directory});
          const restarted=await (services.restartGame??restartGame)(window);
          await status('雀魂已重启，重新搜索游戏窗口',{directory,restarted});
          foregroundId=null;stateWindowId=null;
         }else await status(`正在恢复当前局面：${error.message}`,{directory});
        }
-       if(ended)handContinuity.clear();
+       if(ended||roundReset)handContinuity.clear();
        if(runtime.postMatchReady){
         capture=runtime.capture;adapter=runtime.adapter;bound=window;
+        adapter.bindAbortSignal?.(signal);
         adapter.onModalStatus=message=>log.line(message);
+        adapter.onSavedScreenshot=message=>log.line(message,false,'result');
        }
-       if(ended&&autoRematch===false&&!options.finishResults){matchCompleted=true;break;}
+       retainedMatchArchive=runtime.adapter?.lastMatchArchive??retainedMatchArchive;
+       if(ended&&((abnormalEnd&&(stopAfterMatch||autoRematch===false))||(!stopAfterMatch&&autoRematch===false&&!options.finishResults))){matchCompleted=true;break;}
        // Rebind without forgetting the rejected round; do not repeatedly submit its initial action.
        state=new WaitingState(options.initialScores);
-       state.postMatch=ended;
-       postMatchFlow=ended;
+       const enterPostMatch=ended&&!abnormalEnd;
+       state.postMatch=enterPostMatch;
+       postMatchFlow=enterPostMatch;
+       if(enterPostMatch&&stopAfterMatch)continuation.setStopAfterMatch?.(true);
+       if(abnormalEnd||roundReset){
+        continuation.finish();
+        if(abnormalEnd){
+         startFlow.reset();
+         restartFromLobby=endReason==='returned_to_lobby'&&hasRoom;
+        }
+       }
        if(signal.aborted)break;
        if(rediscover){await delay(1000,null,{signal}).catch(()=>{});continue;}
        if(!capture){
         capture=makeCapture(window,join(base,'waiting-frame.bmp'));
-        adapter=makeAdapter(capture,window);await Promise.all([capture.ready,adapter.ready]);bound=window;
+        adapter=makeAdapter(capture,window);adapter.restoreMatchArchive=retainedMatchArchive;await Promise.all([capture.ready,adapter.ready]);bound=window;
        }
+       adapter.restoreMatchArchive=retainedMatchArchive;
       }
      }else{
       entryProgress.reset();
-      const action=options.singleMatch&&!restartFromLobby?null:await startFlow.step(probe,adapter);
+      const allowStartFlow=hasRoom&&(!fastStart||restartFromLobby);
+      const action=allowStartFlow?await startFlow.step(probe,adapter):null;
       if(action)await status(`开局操作已发送：${startActionName[action]} (${startFlow.index}/${startFlow.actions.length})`,{},false);
-      else if((options.singleMatch&&!restartFromLobby)||startFlow.finished||startFlow.index===startFlow.actions.length)
+      else if(!allowStartFlow||startFlow.finished||startFlow.index===startFlow.actions.length)
        await status(phase==='settlement'?'正在读取结算':state.round?'局面暂未识别清楚，继续识别当前局':'等待进入对局');
      }
     }
-   }catch(error){if(['STARTUP_CHECK_FAILED','NO_PROGRESS_LIMIT','INPUT_HELPER_CONFLICT'].includes(error.code))throw error;await status(`等待恢复：${error.message}`);await close();}
+   }catch(error){if(error.name==='AbortError'||signal.aborted)break;if(['STARTUP_CHECK_FAILED','NO_PROGRESS_LIMIT','INPUT_HELPER_CONFLICT'].includes(error.code)){notifier.notifyBlocked({reason:`运行中止：${error.message}`,key:`blocked:code:${error.code}`});throw error;}notifier.notifyBlocked({reason:`等待恢复：${error.message}`,key:`blocked:recover:${error.message}`});await status(`等待恢复：${error.message}`);await close();}
    if(!signal.aborted)await delay(pollDelay(performance.now()-cycleStart,options.pollMs),null,{signal}).catch(e=>{if(e.name!=='AbortError')throw e;});
   }
  }catch(error){startupFailure=error;throw error;}finally{
+  detachShortcut();
   handContinuity.clear();statusLog.close();
   discovery?.close();
   let cleanupError;

@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {join} from 'node:path';
 
 export function actionTimeoutMs(action) {
+  if (action === 'startup_focus') return 6000;
   if (action === 'riichi_discard' || action === 'call_choice' || action === 'double_click_500') return 4000;
   return 2500;
 }
@@ -30,8 +31,8 @@ export function buildClickRequest(observation, target, maxAgeMs = 1500) {
   const id = randomUUID();
   const expires = Math.floor(Date.now() / 1000) + 4;
   // Preserve exact click/focus semantics:
-  //  - tile / background discards -> direct background client click (no focus)
-  //  - ui / toggle / modal_confirm / retry / paired -> foreground focus then restore
+  //  - tile / background discards -> direct background client click (no WM_ACTIVATE)
+  //  - ui / toggle / modal_confirm / retry / paired -> silent background WM_ACTIVATE click
   const focusClick = target.targetKind === 'ui' || target.targetKind === 'toggle';
   const action = follow
     ? (target.targetKind === 'ui_then_tile' ? 'riichi_discard' : 'call_choice')

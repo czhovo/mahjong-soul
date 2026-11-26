@@ -1,5 +1,7 @@
 import {searchSummary} from './decision-telemetry.mjs';
 import {GAME,remainingHands,waitPositions} from './game-rules.mjs';
+import {reportSavedScreenshot} from './screenshot-log.mjs';
+import {reportMatchResult} from './match-result-log.mjs';
 import {waitDetails} from './wait-details.mjs';
 import {metricsText} from './decision-metrics.mjs';
 import {roundIdentity} from './round-boundary.mjs';
@@ -389,6 +391,9 @@ export class TerminalLog{
   this.discardLine(scoredEvents([event],this.scoreFrame)[0],slot,true);
  }
  observe(frame,history={}, {deferDraw=false}={}){
+  reportMatchResult(frame,text=>this.line(text,false,'result'));
+  reportSavedScreenshot(frame.result_page?.screenshot,text=>this.line(text,false,'result'));
+  for(const path of frame.result_page?.additional_screenshots??[])reportSavedScreenshot(path,text=>this.line(text,false,'result'));
   this.scoreFrame=frame;this.waitHistory=history;
   this.updateDiscardModes(frame);
   // inspect() can emit the first draw before the runner accepts an opening.
@@ -636,7 +641,7 @@ export class TerminalLog{
   }else if(e.kind==='win_confirmation')return;
   else if(e.kind==='auto_win_enable_sent')this.line('自动和牌：开启操作已发送',false,'auto-toggle');
   else if(e.kind==='auto_win_confirmed')this.line('自动和牌：已确认开启',false,'auto-toggle');
-  else if(e.kind==='auto_win_waiting_settlement')this.line(`检测到疑似${e.winKind==='ron'?'荣和':'自摸'}和牌（${tileName(e.winTile)}），静默等待自动和牌结算`,true,'auto-toggle');
+  else if(e.kind==='auto_win_waiting_settlement')return;
   else if(e.kind==='auto_win_hand_corrected'){this.handRef=this.line(`强制重识手牌已纠偏：${tiles(e.previous)} → ${tiles(e.current)}，恢复正常决策`,true);}
   else if(e.kind==='auto_win_idle_until_next_round')this.line('自动和牌已开启且全量重识确认手牌已和牌，但对局未进入结算；本局已进入静默挂机，等待结算或下一局自动恢复',true);
   else if(e.kind==='auto_kita_enable_sent')this.line('自动拔北：开启操作已发送',false,'auto-toggle');
@@ -692,6 +697,13 @@ export class TerminalLog{
   else if(e.kind==='unexecuted_call_closed'){this.waitPlan=null;
    const [kind,tile]=e.action.split(' ');
    this.line(`鸣牌未执行：${actions[kind]}${tileName(tile)}`+(e.decisionId?'（原决策 '+this.cited(this.actionTime(e,'call'))+'）':''));
+  }
+  else if(e.kind==='abnormal_match_end'){
+   this.waitPlan=null;
+  }
+  else if(e.kind==='round_boundary'&&e.abnormal){
+   this.waitPlan=null;
+   if(e.sameRoundReset)this.line('检测到同局重开/途中流局，切换至新一局',true);
   }
   else if(e.kind==='stale_action_recovery')this.line(`旧操作确认已失效，接管当前回合：${e.reason}`);
   else if(['estimated_history','transaction_snapshot_recovery','initial_snapshot_recovery'].includes(e.kind)){

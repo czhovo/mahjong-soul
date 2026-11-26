@@ -1,13 +1,13 @@
-import {GAME,remainingHands} from './game-rules.mjs';
+import {GAME,remainingHands,extensionFlags} from './game-rules.mjs';
 import {roundIdentity} from './round-boundary.mjs';
 import {openingPrefix} from './opening-prefix.mjs';
 import {canRecoverOpening} from './opening-entry.mjs';
 import {snapshotRecovery} from './snapshot-recovery.mjs';
-export function estimatedNextOpening(previous,frame){
+export function estimatedNextOpening(previous,frame,{allowSameRound=false}={}){
  const r=roundIdentity(frame),scores=[];
  if(!r)throw Error('Opening round unreadable');
  if(!previous.context?.scores||!previous.seats)throw Error('Previous score basis missing');
- if(r.wind===(previous.wind??0)&&r.hand===previous.context.hand_index&&r.honba===previous.context.honba)throw Error('Still in the same hand');
+ if(!allowSameRound&&r.wind===(previous.wind??0)&&r.hand===previous.context.hand_index&&r.honba===previous.context.honba)throw Error('Still in the same hand');
  let prefix;
  try{prefix=openingPrefix(frame,{allowPending:true});}
  catch(error){if(!canRecoverOpening(frame,error))throw error;prefix={snapshot:snapshotRecovery(frame)};}
@@ -19,19 +19,20 @@ export function estimatedNextOpening(previous,frame){
  scores[r.seats.self]+=delta;
  return {...prefix,wind:r.wind,seats:r.seats,openingFrame:frame,context:{...previous.context,scores,riichi_sticks:sticks,honba:r.honba,hand_index:r.hand,
   remaining_scheduled_hands:remainingHands(r.wind,r.hand),is_last_scheduled_hand:remainingHands(r.wind,r.hand)===1,
+  ...extensionFlags(r.wind,r.hand),
   tie_priority:GAME.seats.map(s=>(s-r.hand+(GAME.players+1))%GAME.players),estimated:true,
   source:'estimated-missing-settlement',assumptions:['结算漏读，沿用上次已知点数并按座位映射','未知点数转移暂按零估计；供托差额暂记自己']}};
 }
 
 // Carry only an already verified settlement into an observed first turn.
 // Center-score proofs must already be stable, conserved and mapped to old seats.
-export function nextOpening(previous,proof,frame,{allowSnapshot=false}={}){
+export function nextOpening(previous,proof,frame,{allowSnapshot=false,allowSameRound=false}={}){
  if(!proof?.verified||proof.source!=='visible-settlement'||!Number.isInteger(proof.riichiSticks)||proof.riichiSticks<0)throw Error('Verified settlement required');
  const r=roundIdentity(frame);
  if(!r)throw Error('Opening round unreadable');
  const oldHand=previous.context.hand_index;
  const oldWind=previous.wind??previous.resume?.before?.round?.wind;
- const repeated=r.wind===oldWind&&r.hand===oldHand&&r.honba===previous.context.honba+1;
+ const repeated=r.wind===oldWind&&r.hand===oldHand&&(r.honba===previous.context.honba+1||(allowSameRound&&r.honba===previous.context.honba));
  // Passive settlements (including table-score fallback retained across frames while
  // dealing finishes) legitimately advance to honba + 1 on a dealer-noten exhaustive draw.
  const passive=proof.progressionEvidence==='settlement-and-next-opening';
@@ -52,5 +53,6 @@ export function nextOpening(previous,proof,frame,{allowSnapshot=false}={}){
   indicator:prefix.indicator,rivers:prefix.rivers,openingFrame:frame,
   context:{...previous.context,estimated:false,assumptions:[],scores,riichi_sticks:proof.riichiSticks,honba:r.honba,hand_index:r.hand,
    remaining_scheduled_hands:remainingHands(r.wind,r.hand),is_last_scheduled_hand:remainingHands(r.wind,r.hand)===1,
+   ...extensionFlags(r.wind,r.hand),
    tie_priority:previous.context.tie_priority.map(s=>permutation[s]),source:`verified-settlement:${proof.observationId};opening:${frame.id}`}};
 }

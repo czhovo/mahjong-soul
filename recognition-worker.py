@@ -1,6 +1,8 @@
 """Persistent JSON-lines recognizer; no clicks and no hidden game data."""
 import json
 import sys
+import os
+import threading
 import traceback
 sys.stdin.reconfigure(encoding="utf-8")
 sys.stdout.reconfigure(encoding="utf-8")
@@ -67,13 +69,15 @@ from native_face_retry import refine_native_regions,retry_own_meld_faces
 river_tracker=IncrementalRivers()
 public_tail=PublicTileTail()
 from selection_vision import riichi_choices,post_call_choices
+from result_page_archive import ResultPageArchive
+from win_yaku import warmup_recognizer
+controller_root=os.environ.get('MAJSOUL_CONTROLLER_ROOT')
+yonma_archive=Path(controller_root) if controller_root else ROOT
+sanma_archive=yonma_archive/'sanma'
+result_archive=ResultPageArchive(yonma_archive)
+result_archives={False:result_archive,True:ResultPageArchive(sanma_archive,players=3)}
 from choice_vision import read_call_choices
-from phase_vision import recognize_phase,confirm_error,BUTTON_ERROR
-from player_nickname import Nickname,matched_page
-nickname=Nickname()
-
-def observe_name(result,image,source,frame_id):
-    if nickname.observe(image,source,frame_id):result['nicknameUpdate']=nickname.pack()
+from phase_vision import recognize_phase,confirm_error
 from start_vision import recognize_start
 from modal_confirm_vision import read_modal_confirm
 from modal_text import read_modal_text
@@ -85,21 +89,32 @@ def timed_controls(image):
     return recognize_controls(image,sanma=sanma),(perf_counter()-start)*1000
 
 _VERSIONS_PATH=ROOT/'versions.json'
-RECOGNIZER_VERSION=json.loads(_VERSIONS_PATH.read_text(encoding='utf-8'))['recognize'] if _VERSIONS_PATH.exists() else 'v7'
+RECOGNIZER_VERSION=json.loads(_VERSIONS_PATH.read_text(encoding='utf-8'))['recognize'] if _VERSIONS_PATH.exists() else 'v6'
 
 print(json.dumps({'type':'ready','recognizer_version':RECOGNIZER_VERSION}),flush=True)
+# Pre-warm RapidOCR lazily in the background after 8s so short-lived checks/tests
+# incur zero cost while real live hands flush win screenshots in ~0.1s instead of ~10s.
+_yaku_warmup_started=False
+def _ensure_yaku_warmup():
+    global _yaku_warmup_started
+    if _yaku_warmup_started:return
+    _yaku_warmup_started=True
+    threading.Thread(target=warmup_recognizer,name='win-yaku-warmup',daemon=True).start()
+_yaku_warmup_timer=threading.Timer(8.0,_ensure_yaku_warmup)
+_yaku_warmup_timer.daemon=True
+_yaku_warmup_timer.start()
 for line in sys.stdin:
     request={}
     controls_future=None
     try:
         request=json.loads(line)
-        if request.get('restoreNickname'):nickname.restore(request['restoreNickname'])
         requested_sanma=request.get('game')=='sanma'
         if requested_sanma!=sanma:
             seat_key=seat_map=last_sanma_round=None
             public_tail.reset();river_tracker.reset()
         sanma=requested_sanma
-        players=3 if sanma else 4
+        result_archive=result_archives[sanma]
+        if request.get('restoreNickname'):result_archive.nickname.restore(request['restoreNickname'])
         started=perf_counter()
         descriptor=request.get('frameMemory')
         key=(descriptor['name'],descriptor['sequence']) if descriptor else None
@@ -113,25 +128,52 @@ for line in sys.stdin:
         else:image=load(request['image'])
         native_image=image
         loaded=perf_counter()
+        if request.get('phase')=='finalize_match':
+            saved=result_archive.finalize_match(native_image,request.get('capturedAt'),ranking_page=request.get('rankingPage') is True)
+            page=dict(result_archive.final_page) if saved else None
+            last_win=result_archive.flush_win() if saved else None
+            if last_win:page['additional_screenshots']=[last_win]
+            print(json.dumps({'id':request['id'],'saved':saved,'result_page':page},ensure_ascii=False),flush=True)
+            continue
         if request.get('phase')=='save_rebuild':
             from rebuild_screenshot import save_rebuild
-            saved=save_rebuild(image,request['observationId'],request.get('capturedAt'),request.get('evidence',{}),directory=(ROOT/'sanma' if sanma else ROOT)/'saved-rebuild-screenshots')
+            saved=save_rebuild(image,request['observationId'],request.get('capturedAt'),request.get('evidence',{}),directory=result_archive.root/'saved-rebuild-screenshots')
             print(json.dumps({'id':request['id'],'saved':saved},ensure_ascii=False),flush=True)
             continue
         modal_confirm=read_modal_confirm(native_image)
         if modal_confirm:
             print(json.dumps({'id':request['id'],'modal_confirm':modal_confirm},ensure_ascii=False),flush=True)
             continue
-        if request.get('beginMatchArchive'):
+        if request.get('beginMatchArchive') or request.get('resetRoundCache'):
             seat_key=seat_map=last_sanma_round=None
             river_tracker.reset();public_tail.reset()
+        if request.get('beginMatchArchive'):
+            result_archive.begin_match()
+        if request.get('restoreMatchArchive'):result_archive.restore_match(request['restoreMatchArchive'],request.get('capturedAt'))
         end_confirm=confirm_error(native_image)
-        result_page=matched_page(native_image,nickname,players,end_confirm<BUTTON_ERROR)
+        had_pending_win=result_archive.pending_win is not None
+        result_page=result_archive.observe(native_image,request['id'],request.get('capturedAt'),confirm=end_confirm)
+        # Report the observed win page immediately in both game modes.
         if request.get('phase')!='post_match' and result_page and result_page.get('kind')=='own-win-settlement':
+            _ensure_yaku_warmup()
             print(json.dumps({'id':request['id'],'result_page':result_page,
-                'terminal_phase':{'name':'settlement','controls':{}},
-                'recognizer_version':RECOGNIZER_VERSION},ensure_ascii=False),flush=True)
+                'terminal_phase':{'name':'settlement','controls':{}}},ensure_ascii=False),flush=True)
             continue
+        # When the win screen transitions directly into the point-delta settlement overlay,
+        # flush the buffered win screenshot immediately instead of waiting for missing>=2
+        # and running an unnecessary full-table recognize_frame pass.
+        if had_pending_win and result_page is None and result_archive.pending_win is not None and request.get('observeSettlement') and request.get('phase') not in ('post_match','probe','rivers','controls','settlement'):
+            cal_img,_=calibrate(native_image)
+            fast_settlement=read_settlement(cal_img)
+            if fast_settlement.get('complete'):
+                saved_win=result_archive.flush_win()
+                fast_result={'id':request['id'],'settlement':fast_settlement,
+                    'result_page':{'kind':'saved-screenshot','screenshot':saved_win} if saved_win else None,
+                    'terminal_phase':{'name':'settlement','controls':{}},
+                    'recognizer_version':RECOGNIZER_VERSION}
+                if sanma:adapt_result(cal_img,fast_result,last_sanma_round)
+                print(json.dumps(fast_result,ensure_ascii=False),flush=True)
+                continue
         if request.get('phase')=='post_match':
             # This worker survives rematching; the next game's East is drawn
             # independently. Invalidate at match end, before any opening probe.
@@ -140,11 +182,12 @@ for line in sys.stdin:
             lobby_image,lobby_scale=calibrate(native_image)
             # The lobby can already be drawn behind the rematch dialog.
             # Resolve actual foreground controls before considering its backdrop.
-            end_phase=recognize_phase(lobby_image,result_page,players=players,confirm=end_confirm,post_match=True,after_rematch=request.get('afterRematch',False))
+            end_phase=recognize_phase(lobby_image,result_page,players=result_archive.players,confirm=end_confirm,post_match=True,after_rematch=request.get('afterRematch',False))
             start={} if end_phase['controls'] else recognize_start(lobby_image,lobby_only=True)
             if start.get('page')=='lobby':
                 result={'id':request['id'],'start_page':start,'terminal_phase':{'name':'lobby','controls':{}},'result_page':result_page}
-                observe_name(result,native_image,'lobby',key or request['id'])
+                if result_archive.nickname.observe(native_image,'lobby',request['id']):
+                    result['nicknameUpdate']=result_archive.nickname.pack()
                 restore_coordinates(result,lobby_scale)
                 print(json.dumps(result,ensure_ascii=False),flush=True)
                 continue
@@ -157,7 +200,7 @@ for line in sys.stdin:
         if request.get('phase')=='probe':
             image,scale=calibrate(image)
             state=read_round(image)
-            terminal=recognize_phase(image,result_page,players=players,confirm=end_confirm)
+            terminal=recognize_phase(image,result_page,players=result_archive.players,confirm=end_confirm)
             overlay=read_settlement(image)
             result={'id':request['id'],'round':state,'terminal_phase':terminal,'settlement':overlay,'result_page':result_page}
             if sanma:adapt_result(image,result,last_sanma_round,native_image,scale,public_tail=public_tail)
@@ -182,7 +225,8 @@ for line in sys.stdin:
                 entry_settlement=result['settlement']
             else:
                 result.update(time_reserve=read_time_reserve(image),start_page=recognize_start(image,sanma=sanma))
-                if result['start_page'].get('page')=='lobby':observe_name(result,native_image,'lobby',key or request['id'])
+                if result['start_page']['page']=='lobby' and result_archive.nickname.observe(native_image,'lobby',request['id']):
+                    result['nicknameUpdate']=result_archive.nickname.pack()
                 restore_coordinates(result,scale)
                 print(json.dumps(result,ensure_ascii=False),flush=True)
                 continue
@@ -250,7 +294,7 @@ for line in sys.stdin:
         coded_image=exclude_kita(image,round_state) if sanma else image
         remaining_wall=round_state.get('remaining',{}).get('value')
         force_hand_rescan=bool(request.get('force_hand_rescan'))
-        coded=recognize_frame(coded_image,expected,hand_right=150+(14-3*count)*67.5+35,selection_only=request.get('selection') in ('riichi','post_call'),retry_river_scales=not request.get('fast_rivers',False),river_tracker=river_tracker,river_identity=river_identity,public_tail=public_tail,remaining=remaining_wall,players=players,force_hand_rescan=force_hand_rescan,self_kita_count=self_kita_count,exclude_position=empty_pos)
+        coded=recognize_frame(coded_image,expected,hand_right=150+(14-3*count)*67.5+35,selection_only=request.get('selection') in ('riichi','post_call'),retry_river_scales=not request.get('fast_rivers',False),river_tracker=river_tracker,river_identity=river_identity,public_tail=public_tail,remaining=remaining_wall,players=3 if sanma else 4,force_hand_rescan=force_hand_rescan,self_kita_count=self_kita_count,exclude_position=empty_pos)
         native_coded_image=coded_image if image is native_image else (exclude_kita(native_image,round_state) if sanma else native_image)
         retry_own_meld_faces(coded,native_coded_image,scale)
         if request.get('auto_meld_count'):
@@ -259,7 +303,7 @@ for line in sys.stdin:
                 detected_count=len(inferred['groups'])
                 if detected_count!=count:
                     count=detected_count
-                    coded=recognize_frame(coded_image,None,hand_right=150+(14-3*count)*67.5+35,retry_river_scales=True,river_tracker=river_tracker,river_identity=river_identity,public_tail=public_tail,remaining=remaining_wall,players=players,force_hand_rescan=force_hand_rescan,self_kita_count=self_kita_count,exclude_position=empty_pos)
+                    coded=recognize_frame(coded_image,None,hand_right=150+(14-3*count)*67.5+35,retry_river_scales=True,river_tracker=river_tracker,river_identity=river_identity,public_tail=public_tail,remaining=remaining_wall,players=3 if sanma else 4,force_hand_rescan=force_hand_rescan,self_kita_count=self_kita_count,exclude_position=empty_pos)
         refine_native_regions(coded,native_coded_image,scale,skip_own_melds=True,same_pixels=(image is native_image))
         river_tracker.accept_refined(coded.get('rivers',{}),coded_image,(river_identity,))
         coded_at=perf_counter()
@@ -291,7 +335,19 @@ for line in sys.stdin:
             'groupAndSelection':(grouped_at-coded_at)*1000,'controls':controls_ms,
             'controlsWait':(controls_at-grouped_at)*1000,
             'round':round_ms}}
-        if request.get('observeSettlement'):result['terminal_phase']=recognize_phase(image,result_page,players=players,confirm=end_confirm)
+        if request.get('observeSettlement'):
+            result['terminal_phase']=recognize_phase(image,result_page,players=result_archive.players,confirm=end_confirm)
+            if (result['terminal_phase'].get('name')=='unknown' and not result_page and
+                not (settlement and settlement.get('complete')) and
+                round_state.get('wind') is None and round_state.get('hand_number',{}).get('value') is None and
+                not round_state.get('seat_identity',{}).get('verified') and not result['hand'].get('tiles')):
+                start=recognize_start(image,lobby_only=True)
+                if start.get('page')=='lobby':
+                    seat_key=seat_map=last_sanma_round=None
+                    result['start_page']=start
+                    result['terminal_phase']={'name':'lobby','controls':{}}
+                    if result_archive.nickname.observe(native_image,'lobby',request['id']):
+                        result['nicknameUpdate']=result_archive.nickname.pack()
         if settlement is not None:result['settlement']=settlement
         if request.get('readTableScores') or (request.get('readRiichiScores') and 'LIZHI' in controls):
             scores=read_scores(image)
@@ -299,14 +355,15 @@ for line in sys.stdin:
         if sanma:adapt_result(image,result,last_sanma_round,native_image,scale,public_tail=public_tail,precomputed_self_kita=precomputed_self_kita)
         if entry_round is not None:
             result.update(entryTable=True,terminal_phase=terminal,settlement=entry_settlement)
-        if len(result['hand'].get('tiles') or ())>=2 and not result_page and not result.get('settlement',{}).get('complete') and result.get('terminal_phase',{}).get('name') not in ('match_end','settlement','lobby'):
-            observe_name(result,native_image,'table',key or request['id'])
+        if len(result['hand'].get('tiles') or ())>=2 and not result_page and not result.get('settlement',{}).get('complete') and result.get('terminal_phase',{}).get('name') not in ('match_end','settlement','lobby') and result_archive.nickname.observe(native_image,'table',request['id']):
+            result['nicknameUpdate']=result_archive.nickname.pack()
         result=restore_coordinates(result,scale)
     except Exception as error:
         result={'id':request.get('id'),'error':str(error)}
         if isinstance(error,cv2.error):
             frames=traceback.extract_tb(error.__traceback__)
-            site=' > '.join(f'{Path(f.filename).name}:{f.lineno} {f.name}' for f in frames if Path(f.filename).resolve().parent==ROOT)
+            code_dirs={ROOT.resolve()}
+            site=' > '.join(f'{Path(f.filename).name}:{f.lineno} {f.name}' for f in frames if Path(f.filename).resolve().parent in code_dirs)
             result['error']=f"{request.get('phase')} [{site}]: {error}"
             if error.code==-215 and error.err=='!_src.empty()' and error.func.split('::')[-1]=='cvtColor':
                 result.update(errorCode='EMPTY_COLOR_INPUT',errorSite=site)
@@ -317,3 +374,8 @@ for line in sys.stdin:
             except Exception:pass
     result['recognizer_version']=RECOGNIZER_VERSION
     print(json.dumps(result,ensure_ascii=False),flush=True)
+
+# A normal stop on a visible win page has no subsequent frame to mark its end.
+for archive in result_archives.values():
+    saved=archive.flush_win()
+    if saved:print(json.dumps({'result_page':{'kind':'saved-screenshot','screenshot':saved}},ensure_ascii=False),flush=True)

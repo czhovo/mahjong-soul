@@ -128,6 +128,27 @@ export class AhkDriver {
     }
   }
 
+  async selfTestFocus(window) {
+    if (!Number.isSafeInteger(window?.id) || window.id <= 0)
+      throw Error('Startup silent output check requires a game window handle');
+    if (this.inFlight) throw Error('Startup silent output check cannot replace a pending action');
+    await this.start();
+    const id = randomUUID();
+    const line = [id, Math.floor(Date.now() / 1000) + 5, window.id, 0, 'startup_focus', 0, 0].join('\t');
+    try {
+      const ack = await this.send(id, line, actionTimeoutMs('startup_focus'));
+      const [receiptId, status, detail = ''] = ack.split('\t');
+      const silentProof = /^startup_focus_verified;mode=silent_activate;hwnd=(\d+);before=(\d+);after=(\d+);cursor_preserved=1;thread_clean=1;window_state_restored=1$/.exec(detail);
+      const validSilent = silentProof && silentProof[1] === String(window.id) && (silentProof[2] === silentProof[1] || silentProof[3] !== silentProof[1]);
+      if (receiptId !== id || status !== 'input_sent' || !validSilent)
+        throw Error(`Startup silent output check unconfirmed: ${ack}`);
+      return {id, windowId: window.id, ack};
+    } catch (error) {
+      await this.retireQueue('startup-self-test-failed').catch(() => {});
+      throw error;
+    }
+  }
+
   wait(id, timeoutMs = 2500) {
     if (this.error) return Promise.reject(this.error);
     const cached = this.receipts.get(id);
@@ -154,6 +175,18 @@ export class AhkDriver {
     }
     this.pending.clear();
     this.inFlight = null;
+  }
+
+  abortPending(reason = 'Aborted by user interrupt') {
+    const err = Object.assign(Error(reason), {name: 'AbortError', inputNotSent: !this.inFlight});
+    const hadInFlight = Boolean(this.inFlight);
+    this.closed = true;
+    this.fail(err);
+    if (hadInFlight && this.child && this.child.exitCode === null && this.child.signalCode === null) {
+      try { this.child.kill(); } catch {}
+    } else if (this.child?.stdin?.writable) {
+      try { this.child.stdin.end('__quit__\n'); } catch {}
+    }
   }
 
   async close() {

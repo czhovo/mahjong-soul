@@ -1,10 +1,10 @@
-# Mahjong Soul Controller (Tingfeng v12)
+# Mahjong Soul Controller (Tingfeng v13)
 
-Automated visual recognition and input controller for the Windows Steam client of Mahjong Soul (`recognize v7`, `execute v3`). It observes visible table state, maintains public event and hand ledgers incrementally, filters legal actions according to game rules, queries the decision engine, and executes and verifies actions. Supports both 4-player (Yonma) and 3-player (Sanma) tables, two-stage call/discard, first-open call reason reporting, optional call-wait inference, automatic win after Riichi, automatic Kita in Sanma, and post-match auto-rematch flows.
+Automated visual recognition and input controller for the Windows Steam client of Mahjong Soul (`recognize v7`, `execute v4`). It observes visible table state, maintains public event and hand ledgers incrementally, filters legal actions according to game rules, queries the decision engine, and executes and verifies actions. Supports both 4-player (Yonma) and 3-player (Sanma) tables, two-stage call/discard, first-open call reason reporting, optional call-wait inference, automatic win after Riichi, automatic Kita in Sanma, silent background UI activation, `Ctrl+S` stop-after-match toggle, Windows toast notifications, and post-match auto-rematch flows.
 
-4-player matches use **Tingfeng v103** and 3-player matches use **Tingyuan v13**, each with 5.5s / 3.5s / 2.2s time budgets. **This repository contains no engine source code and no engine binaries.** Prebuilt Windows x64 engine binaries are distributed via [GitHub Releases](https://github.com/czhovo/mahjong-soul/releases) and are downloaded and SHA-256 verified automatically by `setup.ps1`. `wgc-capture.cpp` provides the Windows Graphics Capture implementation for the controller.
+4-player matches use **Tingfeng v105** and 3-player matches use **Tingyuan v15**, each with 5.5s / 3.5s / 2.2s time budgets. **This repository contains no engine source code and no engine binaries.** Prebuilt Windows x64 engine binaries are distributed via [GitHub Releases](https://github.com/czhovo/mahjong-soul/releases) and are downloaded and SHA-256 verified automatically by `setup.ps1`. `wgc-capture.cpp` provides the Windows Graphics Capture implementation for the controller.
 
-This public release excludes startup fixture checks, engine warmup probes, click self-tests, personal screenshots, and hardcoded nickname templates. It only retains the in-memory `--name` glyph matching path (always enabled by default), does not recognize avatars, does not archive win or match-result screenshots, and does not print personal win, placement, or PT settlement details. Only minimal UI button, digit, glyph, and tile templates required for recognition are included.
+Nickname matching is built in using runtime in-memory glyph capture from the lobby or table; no personal nickname templates, personal screenshots, or startup calibration fixtures are included in this repository.
 
 ## Installation and Usage
 
@@ -14,10 +14,10 @@ Requirements: Windows 10 1903+, Node.js 22+, Windows x64 Python 3.12, and the St
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-For offline or manual engine installation, download `mahjong-soul-engines-v103-v13-windows-x64.zip` from [Releases](https://github.com/czhovo/mahjong-soul/releases) and pass `-EngineZip`:
+For offline or manual engine installation, download `mahjong-soul-engines-v105-v15-windows-x64.zip` from [Releases](https://github.com/czhovo/mahjong-soul/releases) and pass `-EngineZip`:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\setup.ps1 -EngineZip .\mahjong-soul-engines-v103-v13-windows-x64.zip
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -EngineZip .\mahjong-soul-engines-v105-v15-windows-x64.zip
 ```
 
 Generate and install the coded tile skin from your local game files, then start the controller:
@@ -30,16 +30,15 @@ node resident.mjs -g
 
 - `-b` / `-s` / `-g` / `-t`: Bronze / Silver / Gold / Jade room (mutually exclusive).
 - `-3` / `-4`: 3-player / 4-player mode (defaults to 4-player).
-- `-f`: Skip lobby room-entry clicks and wait directly for an active match (required when no room flag is specified).
+- `-f`: Fast-start mode; skip lobby room-entry clicks and take over the active table directly.
 - `-l`: Use the reduced search budget profile (3.5s, stepping down to 2.2s on low reserve time).
 - `-d`: Archive all captured frames locally (disabled by default).
 - `--naku`: Enable opponent call-wait inference (disabled by default).
-- `--lag`: Enable stall/lag recovery (disabled by default).
-- `--name`: Accepted for CLI compatibility; in-memory nickname matching is always enabled in this public release.
+- `Ctrl+S` (while running): Toggle stop-after-match so the controller exits cleanly after the current match finishes.
 
 ## Capture and Execution
 
-Frames are captured via Windows Graphics Capture (WGC) bound to the game window handle (HWND), unaffected by window movement or occlusion, and passed as raw pixels over shared memory. `execute v3` delivers client-coordinate clicks through a persistent AutoHotkey v2 stdin/stdout pipe: UI buttons, toggles, and retries briefly acquire focus and restore the previous foreground window and cursor position, while ordinary discards do not require foreground activation.
+Frames are captured via Windows Graphics Capture (WGC) bound to the game window handle (HWND), unaffected by window movement or occlusion, and passed as raw pixels over shared memory. `execute v4` delivers client-coordinate clicks through a persistent AutoHotkey v2 stdin/stdout pipe with silent background UI activation and virtual-pointer delivery without disturbing the user's active window or physical cursor.
 
 ## References
 

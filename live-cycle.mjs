@@ -32,7 +32,7 @@ import {repairAnchorEvidence,completeDecodedRivers} from './anchor-evidence.mjs'
 import {chainedCallSpan} from './chained-call-span.mjs';
 import {verifyKongDraw} from './kong-transition.mjs';
 import {sameReactionWindow,classifyPassWindow} from './reaction-window.mjs';
-import {changedRound,roundIdentity,conflictingRound} from './round-boundary.mjs';
+import {changedRound,roundIdentity,conflictingRound,AbnormalBoundaryTracker} from './round-boundary.mjs';
 import {SettlementCollector} from './passive-settlement.mjs';
 import {openingPrefix} from './opening-prefix.mjs';
 import {unchangedDiscard} from './unchanged-discard.mjs';
@@ -49,7 +49,7 @@ export {isConcealedHandSorted};
 // unaccounted public event, or staged special action, retaining exact state.
 // No inferred hidden events or duplicate bot requests. A single retry requires independently verified absence of the input effect.
 export class LiveCycle {
-  constructor(adapter,session,{decision,before,evidence}){
+  constructor(adapter,session,{decision,before,evidence,boundaryOptions}){
     if(session.pending)throw Error('Start from a confirmed own discard');
     delete adapter.autoWinOutput;
     if(GAME.sanma)delete adapter.autoKitaOutput; // a new hand; a reconnect retains the existing pump
@@ -57,6 +57,7 @@ export class LiveCycle {
     this.consumed=[];this.evidence=evidence;this.actions=0;
     this.drawControlWindow=new OwnDrawControlWindow();
     this.autoWinGuard=new AutoWinGuard();
+    this.boundaryTracker=new AbnormalBoundaryTracker(boundaryOptions);
     this.visibleLog=new VisibleEventLog(before);
     for(const [p,s] of Object.entries(before.round?.seat_identity?.seats??{}))if(this.visibleLog.players[p]&&declaredSeats(session.requests).has(s))this.visibleLog.players[p].declared=true;
   }
@@ -343,13 +344,27 @@ export class LiveCycle {
   async stepOnce(readyFrame=null){
     let start=performance.now();const adapter=this.adapter,session=this.session;
     if(this.terminal)return {status:'hand_ended',...this.terminal};
+    if(this.signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
     if(this.special){
       this.special.meldObservations??=this.meldObservations;
+      this.special.boundaryTracker??=this.boundaryTracker;
       const decisionId=this.special.decision.input?.call_search?.id;
       this.special.reportDiscardDecision=(action,metrics,frame,telemetry)=>this.record({kind:'post_call_discard_decision',decisionId,action,metrics,telemetry,waits:discardWaits(frame,waitHistory(session),action)});
       this.special.reportReplacement=(requested,actual)=>this.record({kind:'default_action_replacement',decisionId,requested,actual});
       const result=await advanceStaged(adapter,session,this.special);
       if(result.status==='waiting_round_frame')return result;
+      if(result.status==='match_ended'){
+        this.autoWinGuard?.reset();
+        this.special.decision?.callSearch?.cancel();
+        if(result.abnormal)await this.record({kind:'abnormal_match_end',frame:result.frame,reason:result.reason,elapsedMs:result.elapsedMs,pendingAction:result.pendingAction??null});
+        return result;
+      }
+      if(result.status==='round_boundary'){
+        this.autoWinGuard?.reset();
+        this.special.decision?.callSearch?.cancel();
+        await this.record({kind:'round_boundary',frame:result.frame,before:result.before,after:result.after,abnormal:!!result.abnormal,sameRoundReset:!!result.sameRoundReset,reason:result.reason??null,pendingAction:result.pendingAction??null});
+        return result;
+      }
       if(result.status==='kita_already_discarded'){
         const {played,frame}=result;
         this.special=null;this.kongDraw=null;this.publicFrame=played.baseline;this.consumed=[];
@@ -459,8 +474,60 @@ export class LiveCycle {
     }
     let raw=readyFrame??await adapter.inspect(inspectOptions);
     this.rawFrame=raw;
-    if(raw.terminal_phase?.name==='match_end'){this.autoWinGuard?.reset();return {status:'match_ended',frame:raw.id,pendingAction:session.pending?.output?.response??null};}
+    if(raw.terminal_phase?.name==='match_end'){this.autoWinGuard?.reset();session.pending?.callSearch?.cancel();return {status:'match_ended',frame:raw.id,pendingAction:session.pending?.output?.response??null};}
     if(this.recoveredKong)raw=recoverOwnKong(this.recoveredKong,raw);
+    if(raw.settlement?.complete){
+      this.autoWinGuard?.reset();
+      this.boundaryTracker.markSettlement();
+      const signature=JSON.stringify(Object.fromEntries(Object.entries(raw.settlement.scores).map(([p,s])=>[p,s.value])));
+      if(this.lastSettlementSignature!==signature){
+        await this.record({kind:'settlement_observation',frame:raw.id,scores:raw.settlement.scores,confirmed:false});
+        this.lastSettlementSignature=signature;
+      }
+      if(this.anchor.before?.round?.seat_identity?.seats){
+        try{
+          this.passiveScores??=new SettlementCollector();
+          this.passiveScores.observe(raw,this.anchor.before.round.seat_identity.seats);
+          this.passiveCandidate=this.passiveScores.candidate;
+        }catch{this.passiveCandidate=null;}
+        this.passiveSettlementFrame=raw;
+      }
+      return {status:'observing_settlement',frame:raw.id};
+    }
+    if(raw.result_page?.kind==='own-win-settlement'){
+      this.autoWinGuard?.reset();
+      this.boundaryTracker.markSettlement();
+      return {status:'observing_settlement',frame:raw.id};
+    }
+    const boundary=changedRound(this.anchor.before,raw);
+    if(boundary){
+      this.autoWinGuard?.reset();
+      session.pending?.callSearch?.cancel();
+      if(this.passiveCandidate&&!this.pending&&!session.pending){
+        await this.record({kind:'settlement_candidate',candidate:this.passiveCandidate,nextFrame:raw.id});
+        return {status:'hand_ended',proof:this.passiveCandidate};
+      }
+      await this.record({kind:'round_boundary',frame:raw.id,...boundary,pendingAction:this.pending?.decision.output.response??null});
+      return {status:'round_boundary',frame:raw.id,...boundary,proof:this.passiveCandidate??null};
+    }
+    const abnormalExit=this.boundaryTracker.observe(this.anchor.before,raw,{resetBaseline:this.pending?.before??this.publicFrame??this.anchor.before});
+    if(abnormalExit){
+      if(abnormalExit.status==='waiting_round_frame')return abnormalExit;
+      this.autoWinGuard?.reset();
+      session.pending?.callSearch?.cancel();
+      if(abnormalExit.status==='match_ended'){
+        await this.record({kind:'abnormal_match_end',frame:abnormalExit.frame,reason:abnormalExit.reason,elapsedMs:abnormalExit.elapsedMs,pendingAction:session.pending?.output?.response??null});
+        return {...abnormalExit,pendingAction:session.pending?.output?.response??null};
+      }
+      if(abnormalExit.status==='round_boundary'){
+        await this.record({kind:'round_boundary',frame:abnormalExit.frame,before:abnormalExit.before,after:abnormalExit.after,abnormal:true,sameRoundReset:!!abnormalExit.sameRoundReset,reason:abnormalExit.reason,pendingAction:this.pending?.decision.output.response??null});
+        return {...abnormalExit,pendingAction:this.pending?.decision.output.response??null,proof:this.passiveCandidate??null};
+      }
+    }
+    // Result overlays hide the wind/hand/counters. They are not a playable
+    // table and must not enter meld/event inference or its failure timeout.
+    if(!roundIdentity(raw))return {status:'waiting_round_frame',frame:raw.id};
+    this.passiveSettlementFrame=null;this.passiveCandidate=null;
     if(!this.riverObservations){this.riverObservations=new RiverObservationCache();this.riverObservations.apply(this.anchor.before);}
     if(!this.pending&&!this.special&&!this.adapter.call){
       const conflicts=this.riverObservations.conflicts(raw);
@@ -489,41 +556,6 @@ export class LiveCycle {
       // Old immutable identities are retained by the cache below. An old
       // face disagreement must not put another capture on the decision path.
       await this.record({kind:'recognition_conflict_retained',frame:raw.id,conflicts});
-    }
-    if(raw.settlement?.complete){
-      this.autoWinGuard?.reset();
-      const signature=JSON.stringify(Object.fromEntries(Object.entries(raw.settlement.scores).map(([p,s])=>[p,s.value])));
-      if(this.lastSettlementSignature!==signature){
-        await this.record({kind:'settlement_observation',frame:raw.id,scores:raw.settlement.scores,confirmed:false});
-        this.lastSettlementSignature=signature;
-      }
-      if(!this.pending&&!session.pending){
-        try{
-          this.passiveScores??=new SettlementCollector();
-          this.passiveScores.observe(raw,this.anchor.before.round.seat_identity.seats);
-          this.passiveCandidate=this.passiveScores.candidate;
-        }catch{this.passiveCandidate=null;}
-        this.passiveSettlementFrame=raw;
-      }
-      return {status:'observing_settlement',frame:raw.id};
-    }
-    // Result overlays hide the wind/hand/counters. They are not a playable
-    // table and must not enter meld/event inference or its failure timeout.
-    if(!roundIdentity(raw)||conflictingRound(this.anchor.before,raw))return {status:'waiting_round_frame',frame:raw.id};
-    const boundary=changedRound(this.anchor.before,raw);
-    if(boundary){
-      this.autoWinGuard?.reset();
-      if(this.passiveCandidate&&!this.pending&&!session.pending){
-        await this.record({kind:'settlement_candidate',candidate:this.passiveCandidate,nextFrame:raw.id});
-        return {status:'hand_ended',proof:this.passiveCandidate};
-      }
-      await this.record({kind:'round_boundary',frame:raw.id,...boundary,pendingAction:this.pending?.decision.output.response??null});
-      return {status:'round_boundary',frame:raw.id,...boundary};
-    }
-    this.passiveSettlementFrame=null;this.passiveCandidate=null;
-    if(raw.result_page?.kind==='own-win-settlement'){
-      this.autoWinGuard?.reset();
-      return {status:'observing_settlement',frame:raw.id};
     }
     this.autoWinGuard?.syncRound(raw);
     if(this.autoWinGuard?.isIdleFor(raw))return {status:'idle_until_next_round',frame:raw.id};
@@ -687,6 +719,7 @@ export class LiveCycle {
       if(retryProven){
         const fresh=raw.id!==p.lastRetryFrame&&(!p.lastRetryAt||!Number.isFinite(raw.captureStartedMono)||raw.captureStartedMono>=p.lastRetryAt);
         if(fresh&&(!p.lastRetryAt||performance.now()-p.lastRetryAt>=800)){
+          if(this.signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
           const retryStarted=performance.now();
           const receipt=await adapter.execute({...p.decision,observationId:raw.id,retryInput:true},raw);
           p.lastRetryAt=performance.now();p.lastRetryFrame=raw.id;p.firstUnconfirmedAt=p.lastRetryAt;
@@ -729,6 +762,7 @@ export class LiveCycle {
             const attemptFrame=p.lastRetryFrame??inputFrame.id;
             if(performance.now()-attemptAt<800||raw.id===attemptFrame||
                (Number.isFinite(raw.captureStartedMono)&&raw.captureStartedMono<attemptAt))return {status:'waiting_pass_effect'};
+            if(this.signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
             const receipt=await adapter.pass({...p.decision,observationId:raw.id},raw,{retryVisibleButton:true});
             p.lastRetryAt=performance.now();p.lastRetryFrame=raw.id;
             p.effectRetryCount=(p.effectRetryCount??0)+1;
@@ -788,6 +822,7 @@ export class LiveCycle {
           const retryReady=performance.now()-(p.lastRetryAt??p.sentAt??p.started)>=800&&
             raw.id!==p.lastRetryFrame&&(!p.lastRetryAt||!Number.isFinite(raw.captureStartedMono)||raw.captureStartedMono>=p.lastRetryAt);
           if(retryReady&&unchangedDiscard(p.decision,p.before,raw,{stableFrame})){
+            if(this.signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
             const retryStarted=performance.now();
             const receipt=await adapter.execute({...p.decision,observationId:raw.id,retryInput:true},raw);
             p.lastRetryAt=performance.now();p.lastRetryFrame=raw.id;p.firstUnconfirmedAt=p.lastRetryAt;
@@ -890,7 +925,7 @@ export class LiveCycle {
           if(sent)await this.record({kind:'auto_kita_enable_sent',frame:raw.id});
           if(this.autoKita.confirmedNow)await this.record({kind:'auto_kita_confirmed',frame:raw.id});
         }
-        return this.waitForEvidence(frame,'等待自动拔北和补摸');
+        return performance.now()-p.started<3000?{status:'waiting_auto_kita_draw',frame:frame.id}:this.waitForEvidence(frame,'等待自动拔北和补摸');
       }
     }
     let handSynchronized=false;
@@ -1189,11 +1224,12 @@ export class LiveCycle {
           })().catch(()=>{});
         }
       }
-      decision=await session.decide(request,hand,{reuseObserved:!!span.reuseObserved});
+      decision=await session.decide(request,hand,{reuseObserved:!!span.reuseObserved,signal:this.signal});
     }catch(error){
       // No mouse input has been issued. Retrying a failed calculation must
       // not append the same observed public prefix again.
       if(!session.pending)Object.assign(session,checkpoint);
+      if(error.name==='AbortError'||this.signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
       if(error.code==='AUTO_KITA_PENDING')return this.waitForAutomaticNorth(frame,span.reuseObserved?[]:remaining);
       if(error.code==='BOT_INVALID_RESULT'){
         // The checkpoint above preserves the verified history for a fresh retry.
@@ -1203,6 +1239,11 @@ export class LiveCycle {
       throw error;
     }finally{
       probeAbort?.abort();
+    }
+    if(this.signal?.aborted){
+      decision.callSearch?.cancel();
+      session.pending=null;Object.assign(session,checkpoint);adapter.call=null;
+      return {status:'stopped',pending:!!(this.pending||this.special)};
     }
     decision.observationId=frame.id;
     // If a newer frame arrived during search whose hand already changed (e.g. user acted manually),
@@ -1302,14 +1343,16 @@ export class LiveCycle {
     return {status:'input_sent',action:decision.output.response};
   }
   async run({milliseconds=45000,maxActions=6,signal}={}){
+    this.signal=signal??null;
     const end=performance.now()+milliseconds,initial=this.actions;
     // Do not yield between the call/riichi button and its required discard.
     // A bounded grace period finishes the transaction without starting an
     // unrelated decision after the requested run boundary.
-    while((performance.now()<end&&this.actions-initial<maxActions)||(this.special&&performance.now()<end+8000)){
+    while(!signal?.aborted&&((performance.now()<end&&this.actions-initial<maxActions)||(this.special&&performance.now()<end+8000))){
       if(signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
       let result;
       try{result=await this.step();this.transientFailure=null;}catch(error){
+        if(error.name==='AbortError'||signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
         if(error.outputOutcomeUnknown){
           const p=this.pending??this.special;
           if(this.pending){
@@ -1322,13 +1365,15 @@ export class LiveCycle {
           else if(error.autoKitaOutputPending){await this.record({kind:'auto_kita_input_outcome_unconfirmed',reason:error.message});}
           else throw error;
         }
-        if(!error.outputOutcomeUnknown&&!error.inputNotSent&&!/Recognition timeout|Bound game must be foreground and not minimized|Native capture timeout/.test(error.message))throw error;
+        if(!error.outputOutcomeUnknown&&!error.inputNotSent&&!/Recognition timeout|Bound game must (?:be foreground and not|not be) minimized|Native capture timeout/.test(error.message))throw error;
         if(this.transientFailure!==error.message){await this.record({kind:'recoverable_runtime_wait',reason:error.message});this.transientFailure=error.message;}
         if(error.message!=='Recognition timeout')await delay(250);
         continue;
       }
       if(['hand_ended','match_ended','round_boundary'].includes(result.status))return result;
+      if(result.status==='stopped'||signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
     }
+    if(signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
     return {status:'checkpoint',actions:this.actions-initial,pending:!!(this.pending||this.special)};
   }
 }

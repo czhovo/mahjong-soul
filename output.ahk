@@ -4,8 +4,10 @@
 ; prompt or terminate an active resident --worker instance.
 #Include background-input.ahk
 #Include click-focus.ahk
-; Tile discards keep direct background client clicks (no focus); UI buttons and
-; confirmed retries temporarily acquire foreground focus and restore it after click.
+; All clicks operate silently in the background without stealing OS foreground focus:
+; tile discards use direct background client clicks; UI buttons, toggles, modals, paired
+; sequences, and retries additionally send WM_ACTIVATE(WA_ACTIVE) so Unity's EventSystem
+; processes UGUI onClick while keeping the window in the background, with no post-click teardown.
 if A_Args.Length && A_Args[1] = "--check"
     ExitApp 0
 if A_Args.Length && A_Args[1] = "--geometry" {
@@ -113,7 +115,7 @@ HandleRequestLine(rawLine) {
     id := "unknown"
     status := "rejected"
     detail := ""
-    ctx := 0, activationMs := 0
+    silentActivated := false, activationMs := 0
     sentCount := 0
     started := A_TickCount
     hwnd := 0
@@ -138,94 +140,89 @@ HandleRequestLine(rawLine) {
             detail := "pong;driver_ms=" (A_TickCount - started)
             return id "`t" status "`t" detail
         }
-        if action != "retry_click" && action != "click" && action != "ui_click" && action != "double_click_500" && action != "modal_confirm" && !paired
+        if action != "retry_click" && action != "click" && action != "ui_click" && action != "double_click_500" && action != "startup_focus" && action != "modal_confirm" && !paired
             throw Error("unsupported_action")
         windows := WinGetList("ahk_exe Jantama_MahjongSoul.exe ahk_class UnityWndClass")
         if windows.Length != 1
             throw Error("target_window_not_unique")
         hwnd := windows[1]
-        focused := paired || action = "ui_click" || action = "modal_confirm" || action = "retry_click"
-        if focused
-            ctx := CaptureClickContext(hwnd)
-        RestoreWithoutActivation(hwnd)
-        WinGetClientPos , , &width, &height, "ahk_id " hwnd
-        if width != Number(fields[3]) || height != Number(fields[4])
-            throw Error("window_size_changed")
-        x := Number(fields[6]), y := Number(fields[7])
-        if x < 0 || y < 0 || x >= width || y >= height
-            throw Error("coordinate_out_of_bounds")
-        if paired {
-            nextX := Number(fields[8]), nextY := Number(fields[9])
-            if nextX < 0 || nextY < 0 || nextX >= width || nextY >= height
-                throw Error("coordinate_out_of_bounds")
-        }
-        foreground := ctx ? ctx.previous : DllCall("user32\GetForegroundWindow", "Ptr")
-        if ctx {
-            activationStarted := A_TickCount
-            ActivateClickWindow(hwnd)
-            activationMs := A_TickCount - activationStarted
-        }
-        Loop (paired ? 2 : 1) {
-            if A_Index = 2 {
-                x := nextX, y := nextY
-            }
-            WinGetClientPos , , &currentWidth, &currentHeight, "ahk_id " hwnd
-            if currentWidth != width || currentHeight != height
+        needsSilentActivate := paired || action = "click" || action = "ui_click" || action = "modal_confirm" || action = "retry_click" || action = "double_click_500"
+        if action = "startup_focus" {
+            if hwnd != Number(fields[3]) || Number(fields[4]) != 0 || Number(fields[6]) != 0 || Number(fields[7]) != 0
+                throw Error("startup_target_mismatch")
+            detail := StartupFocusProbe(hwnd)
+            status := "input_sent"
+        } else {
+            ; Capture foreground BEFORE RestoreWithoutActivation so any accidental OS activation
+            ; during minimized restore is honestly detected rather than masked.
+            foreground := DllCall("user32\GetForegroundWindow", "Ptr")
+            RestoreWithoutActivation(hwnd)
+            WinGetClientPos , , &width, &height, "ahk_id " hwnd
+            if width != Number(fields[3]) || height != Number(fields[4])
                 throw Error("window_size_changed")
-            if DateDiff(A_NowUTC, "19700101000000", "Seconds") > expires
-                throw Error("expired_before_message")
-            ClientMouseMessage(hwnd, 0x200, x, y)
-            moved := A_TickCount
-            Sleep 100
-            if ctx && !WinActive("ahk_id " hwnd)
-                throw Error("foreground_lost_before_click")
-            ClientMouseButton(hwnd, x, y, true)
-            sentCount += 1
-            pressed := A_TickCount
-            try {
-                Sleep 100
-            } finally {
-                ClientMouseButton(hwnd, x, y, false)
+            x := Number(fields[6]), y := Number(fields[7])
+            if x < 0 || y < 0 || x >= width || y >= height
+                throw Error("coordinate_out_of_bounds")
+            if paired {
+                nextX := Number(fields[8]), nextY := Number(fields[9])
+                if nextX < 0 || nextY < 0 || nextX >= width || nextY >= height
+                    throw Error("coordinate_out_of_bounds")
             }
-            if action = "double_click_500" {
-                Sleep 500
+            if needsSilentActivate && DllCall("user32\GetForegroundWindow", "Ptr") != hwnd {
+                activationStarted := A_TickCount
+                ; Pre-position virtual pointer before WA_ACTIVE so Unity never hovers over the
+                ; user's physical cursor position during the 30ms activation settle window.
+                VirtualPointerCommand("--set", hwnd, x, y)
+                SilentWindowActivate(hwnd, true)
+                silentActivated := true
+                Sleep 30
+                activationMs := A_TickCount - activationStarted
+            }
+            Loop (paired ? 2 : 1) {
+                if A_Index = 2 {
+                    x := nextX, y := nextY
+                }
+                WinGetClientPos , , &currentWidth, &currentHeight, "ahk_id " hwnd
+                if currentWidth != width || currentHeight != height
+                    throw Error("window_size_changed")
+                if DateDiff(A_NowUTC, "19700101000000", "Seconds") > expires
+                    throw Error("expired_before_message")
+                ClientMouseMessage(hwnd, 0x200, x, y)
+                moved := A_TickCount
+                Sleep 100
                 ClientMouseButton(hwnd, x, y, true)
                 sentCount += 1
+                pressed := A_TickCount
                 try {
                     Sleep 100
                 } finally {
                     ClientMouseButton(hwnd, x, y, false)
                 }
+                if action = "double_click_500" {
+                    Sleep 500
+                    ClientMouseButton(hwnd, x, y, true)
+                    sentCount += 1
+                    try {
+                        Sleep 100
+                    } finally {
+                        ClientMouseButton(hwnd, x, y, false)
+                    }
+                }
+                released := A_TickCount
+                ; Keep inter-step delay ONLY between step 1 and step 2 of a paired sequence.
+                if paired && A_Index = 1
+                    Sleep 130
             }
-            released := A_TickCount
-            ; Keep inter-step delay ONLY between step 1 and step 2 of a paired sequence.
-            ; Never sleep after the final mouse-up before returning the receipt.
-            if paired && A_Index = 1
-                Sleep 130
+            settled := A_TickCount
+            status := "input_sent"
+            method := VirtualPointerEnabled() ? "virtual_pointer" : "send_message_timeout"
+            detail := "requires_fresh_visual_confirmation;method=" method ";silent_activate=" (silentActivated ? 1 : 0) ";target=" x "," y ";foreground_before=" foreground ";activation_ms=" activationMs ";pre_down_ms=" (pressed - moved) ";hold_ms=" (released - pressed) ";post_up_ms=" (settled - released) ";driver_ms=" (A_TickCount - started)
         }
-        settled := A_TickCount
-        status := "input_sent"
-        method := VirtualPointerEnabled() ? "virtual_pointer" : "send_message_timeout"
-        detail := "requires_fresh_visual_confirmation;method=" method ";target=" x "," y ";foreground_before=" foreground ";activation_ms=" activationMs ";pre_down_ms=" (pressed - moved) ";hold_ms=" (released - pressed) ";post_up_ms=" (settled - released) ";driver_ms=" (A_TickCount - started)
     } catch as err {
         detail := StrReplace(StrReplace(err.Message, "`t", " "), "`n", " ")
         if sentCount > 0 {
             status := "partial_input"
             detail := "sent=" sentCount ";" detail
-        }
-    }
-    if ctx {
-        try {
-            RestoreClickContext(hwnd, ctx)
-        } catch as err {
-            warn := StrReplace(StrReplace(err.Message, "`t", " "), "`n", " ")
-            if sentCount > 0 {
-                ; The click already reached the game: NEVER downgrade input_sent to partial_input.
-                detail .= ";restore_warning=" warn
-            } else {
-                detail .= ";" warn
-                status := "rejected"
-            }
         }
     }
     if status = "input_sent" && IsSet(foreground) {

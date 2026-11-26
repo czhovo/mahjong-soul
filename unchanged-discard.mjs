@@ -23,7 +23,8 @@ function localDiscardStillPresent(decision,before,after,stableFrame,ownPrompt){
  if(after.own_melds?.complete&&visible.length!==14-3*after.own_melds.groups.length)return false;
  const priorMelds=melds(before.own_melds),currentMelds=melds(after.own_melds);
  if(priorMelds&&currentMelds&&JSON.stringify(priorMelds)!==JSON.stringify(currentMelds))return false;
- const oldWall=before.round?.remaining?.value,newWall=after.round?.remaining?.value;
+ const oldWall=before.round?.remaining?.estimated?before.round.remaining.observedValue:before.round?.remaining?.value;
+ const newWall=after.round?.remaining?.estimated?after.round.remaining.observedValue:after.round?.remaining?.value;
  if(Number.isInteger(oldWall)&&Number.isInteger(newWall)&&newWall<oldWall)return false;
  const old=before.rivers?.self,next=after.rivers?.self;
  if(old?.complete&&next?.complete&&next.tiles.length>old.tiles.length)return false;

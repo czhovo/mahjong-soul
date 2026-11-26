@@ -35,7 +35,7 @@ export class TableScoreCollector {
  }
 }
 
-export function tableScoreSettlement(previous,stable,next){
+export function tableScoreSettlement(previous,stable,next,{allowSameRound=false}={}){
  if(stable?.frame.id!==next.id)throw Error('Stable current table scores required');
  const r=roundIdentity(next);
  if(!r||!next.table_scores?.complete)throw Error('Incomplete center scores');
@@ -45,7 +45,7 @@ export function tableScoreSettlement(previous,stable,next){
  if(scores.length!==GAME.players||scores.some(v=>!Number.isInteger(v)||v%100))throw Error('Invalid center scores');
  const bank=previous.context.scores.reduce((a,b)=>a+b,0)+1000*previous.context.riichi_sticks;
  if(!Number.isInteger(sticks)||sticks<0||scores.reduce((a,b)=>a+b,0)+1000*sticks!==bank)throw Error('Table scores do not conserve points');
- if(r.wind===(previous.wind??0)&&r.hand===previous.context.hand_index&&r.honba===previous.context.honba)throw Error('Same hand table scores are not settlement');
+ if(!allowSameRound&&r.wind===(previous.wind??0)&&r.hand===previous.context.hand_index&&r.honba===previous.context.honba)throw Error('Same hand table scores are not settlement');
  return {verified:true,source:'visible-settlement',scoreSource:'table-center-fixed-regions',scores,seats:previous.seats,
   observationId:next.id,observationIds:[stable.firstId,next.id],riichiSticks:sticks,
   progressionEvidence:'settlement-and-next-opening',nextObservationId:next.id};
