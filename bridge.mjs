@@ -1,6 +1,6 @@
 import {riichiEvents} from './confirmed-riichi.mjs';
 import {randomUUID} from 'node:crypto';
-import {engineExchange} from './engine-exchange.mjs';
+import {engineExchange,PersistentEnginePool} from './engine-exchange.mjs';
 import {decisionPolicy,selectDecision} from './action-policy.mjs';
 import {parseDecisionTelemetry} from './decision-telemetry.mjs';
 import {GAME,remainingHands,extensionFlags} from './game-rules.mjs';
@@ -14,9 +14,57 @@ import {snapshotRecovery} from './snapshot-recovery.mjs';
 
 // Public observations only. The observer supplies ordered, verified game events.
 export class TingfengSession {
-  constructor(executable, evidenceDirectory, {exchange=engineExchange}={}) {
-    this.executable=executable; this.directory=evidenceDirectory; this.exchange=exchange;
+  constructor(executable, evidenceDirectory, {exchange=null, enginePool=null}={}) {
+    this.executable=executable; this.directory=evidenceDirectory;
+    if(typeof exchange==='function'){
+      this.exchange=exchange;
+      this.enginePool=null;
+      this._ownsEnginePool=false;
+    }else{
+      this.enginePool=enginePool??new PersistentEnginePool();
+      this._ownsEnginePool=!enginePool;
+      this.exchange=(exe,input,opts)=>this.enginePool.exchange(exe,input,opts);
+    }
     this.requests=[]; this.responses=[]; this.pending=null;
+    this.handId=randomUUID(); this.streamSeq=0;
+    this._syncedPrefixJson=null; this._syncedPrefixLen=0; this._syncedExecutable=null;
+    this._streamEnabled=!!this.enginePool;
+  }
+  _prefixKey(requests){
+    return JSON.stringify(requests??[]);
+  }
+  _streamExe(){
+    return this._syncedExecutable??this.executable;
+  }
+  syncStreamState(reason='state_sync',{ponder=true}={}){
+    if(!this._streamEnabled||!this.requests.length)return;
+    const exe=this._streamExe();
+    this.streamSeq++;
+    this._syncedPrefixJson=this._prefixKey(this.requests);
+    this._syncedPrefixLen=this.requests.length;
+    this._syncedExecutable=exe;
+    void this.enginePool.syncState(exe,{
+      handId:this.handId,seq:this.streamSeq,requests:structuredClone(this.requests),
+      matchContext:this.context,opponentHandConstraints:this.opponentHandConstraints?.schema===2?structuredClone(this.opponentHandConstraints):null,
+      ponder,
+    }).catch(()=>{});
+  }
+  async endStreamHand(reason='hand_end'){
+    this._syncedPrefixJson=null;this._syncedPrefixLen=0;
+    if(this._streamEnabled)await this.enginePool.handEnd({reason});
+  }
+  async resetEngineSession({reason='new_hand',clearAll=true}={}){
+    this._syncedPrefixJson=null;this._syncedPrefixLen=0;
+    if(this.enginePool)await this.enginePool.resetSession({reason,clearAll});
+  }
+  async close({force=false}={}){
+    this.pending?.callSearch?.cancel();
+    this._syncedPrefixJson=null;this._syncedPrefixLen=0;
+    if(this._ownsEnginePool&&this.enginePool){
+      await this.enginePool.closeAll({force});
+    }else if(this.enginePool){
+      await this.enginePool.handEnd({reason:'session_close'});
+    }
   }
   begin({seat,round,hand,indicator,context}) {
     if(this.ledger||this.requests.length||this.responses.length)throw Error('Opening initialization requires a new hand session');
@@ -27,12 +75,30 @@ export class TingfengSession {
     this.ledger=initialLedger(seat,hand);
     this.opponentHandConstraints=undefined;
     this.currentDora=[];this.discardObservation=undefined;
+    this.handId=randomUUID();this.streamSeq=1;
+    this._syncedPrefixJson=this._prefixKey(this.requests);this._syncedPrefixLen=this.requests.length;this._syncedExecutable=this.executable;
+    if(this._streamEnabled){
+      void this.enginePool.handStart(this.executable,{
+        handId:this.handId,seq:this.streamSeq,requests:structuredClone(this.requests),
+        matchContext:this.context,ponder:true,
+      }).catch(()=>{});
+    }
   }
   observe(event) {
     if(this.pending)throw Error('Confirm or resolve pending action before recording another event');
     [event]=riichiEvents([event],this.requests);
     this.ledger=applyPublicEvent(this.ledger,event);
     this.requests.push(event); this.responses.push('PASS');
+    if(this._streamEnabled){
+      const exe=this._streamExe();
+      this.streamSeq++;
+      this._syncedPrefixJson=this._prefixKey(this.requests);
+      this._syncedPrefixLen=this.requests.length;
+      void this.enginePool.pushEvents(exe,{
+        handId:this.handId,seq:this.streamSeq,events:[structuredClone(event)],
+        matchContext:this.context,ponder:true,
+      }).catch(()=>{});
+    }
   }
   restoreSnapshot(snapshot){
     if(this.ledger||this.requests.length||this.responses.length)throw Error('Snapshot initialization requires a new hand session');
@@ -51,6 +117,16 @@ export class TingfengSession {
     }
     this.snapshotBoundary={id:snapshot.frameId,actorCertain:snapshot.chronologyCertain===true,river:snapshot.boundaryRivers};
     this.estimatedHistory={frameId:snapshot.frameId,assumptions:snapshot.assumptions};
+    this.handId=randomUUID();this.streamSeq=1;
+    if(this._streamEnabled){
+      this._syncedPrefixJson=this._prefixKey(this.requests);
+      this._syncedPrefixLen=this.requests.length;
+      this._syncedExecutable=this.executable;
+      void this.enginePool.syncState(this.executable,{
+        handId:this.handId,seq:this.streamSeq,requests:structuredClone(this.requests),
+        matchContext:this.context,ponder:true,
+      }).catch(()=>{});
+    }
   }
   observeVerified(transition,visibleHand) {
     if(this.pending)throw Error('Confirm pending action before recording a transition');
@@ -64,6 +140,16 @@ export class TingfengSession {
     this.ledger=ledger;
     this.requests.push(...events);
     this.responses.push(...transition.requests.map(()=> 'PASS'));
+    if(this._streamEnabled&&events.length){
+      const exe=this._streamExe();
+      this.streamSeq++;
+      this._syncedPrefixJson=this._prefixKey(this.requests);
+      this._syncedPrefixLen=this.requests.length;
+      void this.enginePool.pushEvents(exe,{
+        handId:this.handId,seq:this.streamSeq,events:structuredClone(events),
+        matchContext:this.context,ponder:true,
+      }).catch(()=>{});
+    }
   }
   reconcileVisibleHand(visible,{frameId}={}) {
     if(this.pending)throw Error('Resolve pending input before synchronizing current hand');
@@ -100,7 +186,7 @@ export class TingfengSession {
           throw Error('补摸牌或本方拔北数尚未核实');
         input.requests=[...snapshot.requests,event];
         input.responses=snapshot.requests.map(()=>'PASS');
-        const recovered=new TingfengSession(this.executable,this.directory);
+        const recovered=new TingfengSession(this.executable,this.directory,{exchange:()=>{throw Error('ledger-only');}});
         recovered.restoreSnapshot(snapshot);
         nextLedger=applyPublicEvent(recovered.ledger,event);
         input.north_count_recovery={frame:this.discardObservation.id,recorded,observed:stock.count,history_order_estimated:true};
@@ -136,7 +222,30 @@ export class TingfengSession {
       this.verifiedBudgetEngine??=await verifyEngineBuild(this.executable);
       if(this.verifiedBudgetEngine.reducedExecutable&&searchSeconds===this.verifiedBudgetEngine.reducedSearchSeconds)executable=this.verifiedBudgetEngine.reducedExecutable;
     }
-    const output=await this.exchange(executable,input,{signal,onPhaseStart:()=>this.searchBudget?.beginSearch?.(),onPhaseEnd:()=>this.searchBudget?.endSearch?.()}).then(result=>{
+    const runExchange=async()=>{
+      const opts={signal,onPhaseStart:()=>this.searchBudget?.beginSearch?.(),onPhaseEnd:()=>this.searchBudget?.endSearch?.()};
+      if(!this._streamEnabled)return this.exchange(executable,input,opts);
+      const prefix=input.requests.slice(0,-1);
+      const ev=input.requests.at(-1);
+      const prefixKey=this._prefixKey(prefix);
+      if(this._syncedExecutable!==executable||this._syncedPrefixJson!==prefixKey){
+        this.streamSeq++;
+        await this.enginePool.syncState(executable,{
+          handId:this.handId,seq:this.streamSeq,requests:prefix,
+          matchContext:input.match_context,opponentHandConstraints:input.opponent_hand_constraints??null,
+          ponder:false,
+        });
+        this._syncedExecutable=executable;
+        this._syncedPrefixJson=prefixKey;
+        this._syncedPrefixLen=prefix.length;
+      }
+      return this.enginePool.decideStream(executable,{
+        handId:this.handId,seq:this.streamSeq,prefixRequests:prefix,event:ev,reuseObserved:false,
+        matchContext:input.match_context,opponentHandConstraints:input.opponent_hand_constraints??null,
+        callSearch:input.call_search,fallbackRequests:input.requests,
+      },opts);
+    };
+    const output=await runExchange().then(result=>{
       const original=result.output.response;
       let row;
       try{row=selectDecision(result.output,policy);}catch(error){result.callSearch?.cancel();throw error;}
@@ -197,6 +306,28 @@ export class TingfengSession {
     this.ledger=structuredClone(pending.ledger);
     this.pending=null;
     appendEvidence(`${this.directory}/confirmations.jsonl`,JSON.stringify({at:new Date().toISOString(),action:'PASS',unexecutedAction:pending.output.response,source:'visible-unchanged-melds-and-closed-call'})+'\n');
+    this._syncCommittedTail(pending.executable);
+  }
+  _syncCommittedTail(executable=null){
+    if(!this._streamEnabled||!this.requests.length)return;
+    const exe=executable??this._streamExe();
+    const fullKey=this._prefixKey(this.requests);
+    if(this._syncedExecutable===exe&&this._syncedPrefixJson===fullKey)return;
+    const prevLen=this._syncedPrefixLen;
+    if(this._syncedExecutable===exe&&prevLen>0&&this.requests.length>prevLen&&
+       this._prefixKey(this.requests.slice(0,prevLen))===this._syncedPrefixJson){
+      const delta=this.requests.slice(prevLen);
+      this.streamSeq++;
+      this._syncedPrefixJson=fullKey;
+      this._syncedPrefixLen=this.requests.length;
+      void this.enginePool.pushEvents(exe,{
+        handId:this.handId,seq:this.streamSeq,events:structuredClone(delta),
+        matchContext:this.context,ponder:true,
+      }).catch(()=>{});
+    }else{
+      this._syncedExecutable=exe;
+      this.syncStreamState('committed_tail_sync',{ponder:true});
+    }
   }
   async confirm(observedAction) {
     if(!this.pending||observedAction!==this.pending.output.response)throw Error('Client action does not match pending decision');
@@ -206,6 +337,7 @@ export class TingfengSession {
     const ledger=publicAction?applyPublicEvent(this.pending.ledger,publicAction):this.pending.ledger;
     const requests=[...this.pending.input.requests];
     const responses=[...this.pending.input.responses,observedAction];
+    const pendingExe=this.pending.executable;
     // The frozen bot reconstructs state from requests, not responses. A
     // verified own action must therefore also enter the public event stream.
     // Callers must not feed this same own-action notification a second time.
@@ -223,5 +355,6 @@ export class TingfengSession {
     this.pending.callSearch?.cancel();
     this.requests=requests;this.responses=responses;this.ledger=ledger;
     this.pending=null;
+    this._syncCommittedTail(pendingExe);
   }
 }

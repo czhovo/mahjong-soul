@@ -1,82 +1,82 @@
 {
   "repository": "czhovo/mahjong-soul",
-  "releaseTag": "v13",
-  "controller": "v13",
+  "releaseTag": "v15",
+  "controller": "v15",
   "recognize": "v7",
   "execute": "v4",
   "engineBundle": {
     "architecture": "x64",
-    "name": "mahjong-soul-engines-v105-v15-windows-x64.zip",
-    "url": "https://github.com/czhovo/mahjong-soul/releases/download/v13/mahjong-soul-engines-v105-v15-windows-x64.zip",
-    "sha256": "e0ed50f5f78caa87723feae44e79c48cc5adaffcf9788e25bdfc7a454ebac699",
-    "size": 6886677
+    "name": "mahjong-soul-engines-v111-v21-windows-x64.zip",
+    "url": "https://github.com/czhovo/mahjong-soul/releases/download/v15/mahjong-soul-engines-v111-v21-windows-x64.zip",
+    "sha256": "a48b5d5bd40e2ec6e34fdf66f55105e40bca839ebe2dc496715397083cf28daa",
+    "size": 7369107
   },
   "engines": [
     {
       "players": 4,
       "architecture": "x64",
       "profile": "5p5",
-      "version": "v105-5p5",
+      "version": "v111-5p5",
       "searchSeconds": 5.5,
-      "archiveEntry": "windows-x64/tingfeng-v105-5p5.exe",
-      "path": "engines/v105-5p5/bot.exe",
-      "sha256": "f5869c5c570246c0f50dae2e55ddf5d660205b3a95ab59b14577b9532b562eed",
-      "size": 2784768
+      "archiveEntry": "windows-x64/tingfeng-v111-5p5.exe",
+      "path": "engines/v111-5p5/bot.exe",
+      "sha256": "2666478384e986e195e5825f6f7113b5007d2d11edea2301ff18d195eb0a13ae",
+      "size": 2985472
     },
     {
       "players": 4,
       "architecture": "x64",
       "profile": "3p5",
-      "version": "v105-3p5",
+      "version": "v111-3p5",
       "searchSeconds": 3.5,
-      "archiveEntry": "windows-x64/tingfeng-v105-3p5.exe",
-      "path": "engines/v105-3p5/bot.exe",
-      "sha256": "d5e7335b5ce2c85dcc9bf331a0a9e0ace14449aa765590c8461fbf98e784169e",
-      "size": 2784768
+      "archiveEntry": "windows-x64/tingfeng-v111-3p5.exe",
+      "path": "engines/v111-3p5/bot.exe",
+      "sha256": "a58106dbdec77db5d6a533b06eaeb11387a615d97167d3f4f54c837e4cc46ddc",
+      "size": 2985472
     },
     {
       "players": 4,
       "architecture": "x64",
       "profile": "2p2",
-      "version": "v105-2p2",
+      "version": "v111-2p2",
       "searchSeconds": 2.2,
-      "archiveEntry": "windows-x64/tingfeng-v105-2p2.exe",
-      "path": "engines/v105-2p2/bot.exe",
-      "sha256": "0986f86fb84d889e991d0a93f2fbb098bac0be29c70dca67d40e6cf8fb32409c",
-      "size": 2784768
+      "archiveEntry": "windows-x64/tingfeng-v111-2p2.exe",
+      "path": "engines/v111-2p2/bot.exe",
+      "sha256": "27f9ffd977d90f299c9fb5cae649d31cb19b50b0042dc7e4df7bbe0b003d5cda",
+      "size": 2985472
     },
     {
       "players": 3,
       "architecture": "x64",
       "profile": "5p5",
-      "version": "v15-5p5",
+      "version": "v21-5p5",
       "searchSeconds": 5.5,
-      "archiveEntry": "windows-x64/tingyuan-v15-5p5.exe",
-      "path": "sanma/engines/tingyuan-v15-5p5.exe",
-      "sha256": "e5f098ebf7750b63481a76a7fd261624394adb49b2667cf2f44735df2dfc47fd",
-      "size": 2860032
+      "archiveEntry": "windows-x64/tingyuan-v21-5p5.exe",
+      "path": "sanma/engines/tingyuan-v21-5p5.exe",
+      "sha256": "9074b347296f8875c5ec46da084fdc2e57beb58143ccdb2562016dccf4cc72d8",
+      "size": 3080704
     },
     {
       "players": 3,
       "architecture": "x64",
       "profile": "3p5",
-      "version": "v15-3p5",
+      "version": "v21-3p5",
       "searchSeconds": 3.5,
-      "archiveEntry": "windows-x64/tingyuan-v15-3p5.exe",
-      "path": "sanma/engines/tingyuan-v15-3p5.exe",
-      "sha256": "e41cc63cec276812709d2527bd62651b162f98ae0fd63514a416085f5f2e28eb",
-      "size": 2860032
+      "archiveEntry": "windows-x64/tingyuan-v21-3p5.exe",
+      "path": "sanma/engines/tingyuan-v21-3p5.exe",
+      "sha256": "ab704def6e597130eb86076359636d09ca606690a88ef51bc59c3062b3339f7e",
+      "size": 3080704
     },
     {
       "players": 3,
       "architecture": "x64",
       "profile": "2p2",
-      "version": "v15-2p2",
+      "version": "v21-2p2",
       "searchSeconds": 2.2,
-      "archiveEntry": "windows-x64/tingyuan-v15-2p2.exe",
-      "path": "sanma/engines/tingyuan-v15-2p2.exe",
-      "sha256": "0bb6530254b2d2c218a7fbc632852524555363e6a8b47dde2d063f500c950f5a",
-      "size": 2860032
+      "archiveEntry": "windows-x64/tingyuan-v21-2p2.exe",
+      "path": "sanma/engines/tingyuan-v21-2p2.exe",
+      "sha256": "e0ad76b2a6ee6ccfac12ea97bb15d8c36716f0490037d265258f2e6f95d167ae",
+      "size": 3080704
     }
   ],
   "autohotkey": {

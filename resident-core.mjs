@@ -14,6 +14,7 @@ import {canRecoverOpening,OpeningEntryProgress} from './opening-entry.mjs';
 import {roundIdentity} from './round-boundary.mjs';
 import {nextOpening} from './next-opening.mjs';
 import {runLiveHand} from './run-live-hand.mjs';
+import {PersistentEnginePool} from './engine-exchange.mjs';
 import {SearchBudget} from './search-budget.mjs';
 import {SHORT_EXECUTABLE,DEFAULT_EXECUTABLE,verifyEngineBuild} from './engine-builds.mjs';
 import {VERSIONS} from './version-info.mjs';
@@ -24,7 +25,7 @@ import {acquireProcessLock} from './process-lock.mjs';
 import {MatchContinuation} from './match-continuation.mjs';
 import {StartFlow,startActionName} from './start-flow.mjs';
 import {restartGame} from './restart-game.mjs';
-import {WindowsNotifier} from './windows-notify.mjs';
+import {WindowsNotifier,extractMatchResultInfo} from './windows-notify.mjs';
 
 const ROOT=dirname(fileURLToPath(import.meta.url));
 export function pollDelay(elapsed,pollMs=250){return Math.max(0,pollMs-elapsed);}
@@ -147,9 +148,10 @@ export async function runResident(options={}){
  const discover=services.discover??(()=>{if(!discovery||discovery.error){discovery?.close();discovery=new WindowDiscovery(options.python);}return discovery.discover();});
  const makeCapture=services.makeCapture??((w,p)=>new NativeCapture(w,{transientPath:p,saveAllScreenshots:options.saveAllScreenshots}));
  const adapterFactory=services.makeAdapter??((c,w)=>new ClientAdapter({get_window_state:()=>c.capture()},w));
- const makeAdapter=(c,w)=>{const adapter=adapterFactory(c,w);adapter.bindAbortSignal?.(signal);adapter.naku=options.naku===true;adapter.searchBudget=SearchBudget.forEngine(engine);adapter.onModalStatus=message=>log.line(message);adapter.onSavedScreenshot=message=>log.line(message,false,'result');return adapter;};
+ const makeAdapter=(c,w)=>{const adapter=adapterFactory(c,w);adapter.bindAbortSignal?.(signal);adapter.naku=options.naku===true;adapter.searchBudget=SearchBudget.forEngine(engine);adapter.onModalStatus=message=>log.line(message);adapter.onSavedScreenshot=message=>{const mr=extractMatchResultInfo(message);if(mr)notifier.notifyMatchEnded({matchResult:mr,frame:adapter.latest??null});log.line(message,false,'result');};return adapter;};
  const play=services.play??runLiveHand;
  const notifier=services.notifier??options.notifier??new WindowsNotifier();
+ notifier.warmup?.();
  const continuation=services.continuation??new MatchContinuation({allowRematch:autoRematch!==false,brief:options.briefPostMatch===true,onRecovery:(action,seconds=10)=>{
   const label={CONFIRM:'确认',REMATCH:'再来一场',REMATCH_CONFIRM:'确认再来一场',REMATCH_CANCEL:'取消再来一局',EXIT:'确认退出'}[action]??action;
   notifier.notifyRetryFailure({action,reason:`终局操作${seconds}秒未推进，已重试：${label}`,key:`retry:postmatch:${action}`});
@@ -192,12 +194,23 @@ export async function runResident(options={}){
  };
  const handContinuity=new HandContinuity();
  const entryProgress=new OpeningEntryProgress();
+ const enginePool=services.enginePool??new PersistentEnginePool();
  let retainedMatchArchive=null;
  let restartFromLobby=false;
  let plainLobbySince=null;
  const close=async()=>{if(adapter?.lastMatchArchive)retainedMatchArchive=adapter.lastMatchArchive;try{await adapter?.close();}finally{try{await capture?.close();}finally{adapter=null;capture=null;bound=null;}}};
  try{
-  await status(fastStart?'快速接管模式：直接识别当前局面':(hasRoom?'准备进入开局流程':'等待进入对局'));
+  if(fastStart){startup.report.status='skipped';await startup.save();await status('快速接管模式：跳过启动检查与开局流程，直接识别当前局面');}else{
+   await status(`${recognizeLabel}: Checking`,{},false);
+   await startup.run('recognition',()=> (services.checkRecognition??checkRecognition)({python:options.python,pythonPackages:options.pythonPackages}));
+   await status(`${recognizeLabel}: Ready ${(startup.report.checks.recognition.elapsedMs/1000).toFixed(3)}秒`,{},false);
+   for(const [version,searchSeconds] of [[engine.version,engine.searchSeconds??3.3],[engine.reducedVersion,engine.reducedSearchSeconds??1.7]]){
+    if(!version)continue;
+    await status(`${version}: Checking`,{},false);
+    await startup.run(version,()=> (services.checkDecision??checkDecision)({engine,directory:base,signal,searchSeconds}));
+    await status(startupDecisionReady(version,startup.report.checks[version],searchSeconds),{},false);
+   }
+  }
   while(!signal.aborted){
    const cycleStart=performance.now();
    try{
@@ -216,10 +229,14 @@ export async function runResident(options={}){
       adapter=makeAdapter(capture,window);adapter.restoreMatchArchive=retainedMatchArchive;await Promise.all([capture.ready,adapter.ready]);bound=window;}
      const waitingRematch=continuation.previousAction?.action==='REMATCH_CONFIRM';
      const probe=await adapter.inspect({phase:postMatchFlow?'post_match':'probe',...(postMatchFlow?{afterRematch:continuation.previousAction?.action==='REMATCH'}:{readOpening:true,auto_meld_count:true,readTableScores:true,...(waitingRematch?{checkPostMatchLobby:true}:{})}),persistEvidence:false});
+     const probeMatchResult=extractMatchResultInfo(probe);
+     if(probeMatchResult){
+      notifier.notifyMatchEnded({matchResult:probeMatchResult,frame:probe});
+     }
      let matchResultText;reportMatchResult(probe,text=>{matchResultText=text;});
      if(matchResultText){
       await status(matchResultText,{},false);
-      notifier.notifyMatchEnded({matchKey:`result:${runNumber}:${matchResultText}`,summary:matchResultText,frame:probe});
+      notifier.notifyMatchEnded({matchResult:probeMatchResult,summary:matchResultText,frame:probe});
      }
      let screenshotText;reportSavedScreenshot(probe.result_page?.screenshot,text=>{screenshotText=text;});
      if(screenshotText)await status(screenshotText,{},false);
@@ -277,6 +294,8 @@ export async function runResident(options={}){
       const action=await continuation.step(probe,adapter);
       if(action==='FINISHED'){matchCompleted=true;break;}
       let finalScreenshotText;reportSavedScreenshot(probe.result_page?.screenshot,text=>{finalScreenshotText=text;});
+      const finalMatchResult=extractMatchResultInfo(probe)??extractMatchResultInfo(finalScreenshotText);
+      if(finalMatchResult)notifier.notifyMatchEnded({matchResult:finalMatchResult,frame:probe});
       if(finalScreenshotText)await status(finalScreenshotText,{},false);
       if(action==='REMATCH_CONFIRM'){postMatchFlow=false;state=new WaitingState(options.initialScores);}
       if(action)await status(`终局操作已发送：${{CONFIRM:'确认',REMATCH:'再来一局',REMATCH_CONFIRM:'确认',REMATCH_CANCEL:'取消再来一局',EXIT:'确认退出'}[action]}`,{},false);
@@ -325,7 +344,7 @@ export async function runResident(options={}){
        capture.transientPath=null;
        if(!continuing)notifier.resetMatch();
        notifier.setWindow(window);
-       const runtime={capture,adapter,continuing,handContinuity,notifier,entryFrame:continuing?null:frame,reuseAfterMatch:true};capture=null;adapter=null;bound=null;
+       const runtime={capture,adapter,continuing,handContinuity,notifier,enginePool,entryFrame:continuing?null:frame,reuseAfterMatch:true};capture=null;adapter=null;bound=null;
        runtime.adapter.beginMatchArchive=!continuing;runtime.adapter.restoreMatchArchive=null;runtime.adapter.lastMatchArchive=null;retainedMatchArchive=null;
        let ended=false,abnormalEnd=false,roundReset=false,endReason=null,rediscover=false;
        try{
@@ -342,10 +361,9 @@ export async function runResident(options={}){
            ?'检测到新对局或非连续换局，重新接入当前局面'
            :'正在恢复当前局面';
         await status(msg,{directory,result},!ended&&!roundReset);
-        if(ended){
+        if(ended&&abnormalEnd){
          notifier.notifyMatchEnded({
-          matchKey:`match-end:${runNumber}`,
-          summary:abnormalEnd?msg:'整场对局结束',
+          summary:msg,
           frame:runtime.adapter?.latest??null,
          });
         }
@@ -366,7 +384,7 @@ export async function runResident(options={}){
         capture=runtime.capture;adapter=runtime.adapter;bound=window;
         adapter.bindAbortSignal?.(signal);
         adapter.onModalStatus=message=>log.line(message);
-        adapter.onSavedScreenshot=message=>log.line(message,false,'result');
+        adapter.onSavedScreenshot=message=>{const mr=extractMatchResultInfo(message);if(mr)notifier.notifyMatchEnded({matchResult:mr,frame:adapter.latest??null});log.line(message,false,'result');};
        }
        retainedMatchArchive=runtime.adapter?.lastMatchArchive??retainedMatchArchive;
        if(ended&&((abnormalEnd&&(stopAfterMatch||autoRematch===false))||(!stopAfterMatch&&autoRematch===false&&!options.finishResults))){matchCompleted=true;break;}
@@ -407,8 +425,10 @@ export async function runResident(options={}){
   detachShortcut();
   handContinuity.clear();statusLog.close();
   discovery?.close();
+  notifier.close?.();
   let cleanupError;
-  try{await close();}catch(error){cleanupError=error;}
+  try{await enginePool.closeAll({force:!!signal.aborted});}catch(error){cleanupError??=error;}
+  try{await close();}catch(error){cleanupError??=error;}
   try{await lock.close();}finally{await unlink(lockPath);}
   await status(startupFailure?startupFailure.message:(matchCompleted?'整场对局已结束，':'')+'听风执牌已停止',{status:startupFailure?'startup_failed':matchCompleted?'match_ended':'stopped',...(cleanupError?{cleanupError:cleanupError.message}:{})},false);
   if(startupFailure)startupFailure.reported=true;

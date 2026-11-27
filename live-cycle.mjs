@@ -76,6 +76,7 @@ export class LiveCycle {
     if(manual.commitRequests?.length){
       session.observeVerified({verified:true,requests:manual.commitRequests},manual.expectedCommitHand);
     }
+    session.syncStreamState?.('manual_own_action');
     if(manual.acceptedRiichi&&adapter.points){
       try{adapter.acceptRiichi(manual.acceptedRiichi);}catch{}
     }
@@ -474,7 +475,7 @@ export class LiveCycle {
     }
     let raw=readyFrame??await adapter.inspect(inspectOptions);
     this.rawFrame=raw;
-    if(raw.terminal_phase?.name==='match_end'){this.autoWinGuard?.reset();session.pending?.callSearch?.cancel();return {status:'match_ended',frame:raw.id,pendingAction:session.pending?.output?.response??null};}
+    if(raw.terminal_phase?.name==='match_end'){this.autoWinGuard?.reset();session.pending?.callSearch?.cancel();void session.endStreamHand?.('match_end').catch(()=>{});return {status:'match_ended',frame:raw.id,pendingAction:session.pending?.output?.response??null};}
     if(this.recoveredKong)raw=recoverOwnKong(this.recoveredKong,raw);
     if(raw.settlement?.complete){
       this.autoWinGuard?.reset();
@@ -508,6 +509,7 @@ export class LiveCycle {
         return {status:'hand_ended',proof:this.passiveCandidate};
       }
       await this.record({kind:'round_boundary',frame:raw.id,...boundary,pendingAction:this.pending?.decision.output.response??null});
+      void session.endStreamHand?.('round_boundary').catch(()=>{});
       return {status:'round_boundary',frame:raw.id,...boundary,proof:this.passiveCandidate??null};
     }
     const abnormalExit=this.boundaryTracker.observe(this.anchor.before,raw,{resetBaseline:this.pending?.before??this.publicFrame??this.anchor.before});
@@ -517,10 +519,12 @@ export class LiveCycle {
       session.pending?.callSearch?.cancel();
       if(abnormalExit.status==='match_ended'){
         await this.record({kind:'abnormal_match_end',frame:abnormalExit.frame,reason:abnormalExit.reason,elapsedMs:abnormalExit.elapsedMs,pendingAction:session.pending?.output?.response??null});
+        void session.endStreamHand?.('abnormal_match_end').catch(()=>{});
         return {...abnormalExit,pendingAction:session.pending?.output?.response??null};
       }
       if(abnormalExit.status==='round_boundary'){
         await this.record({kind:'round_boundary',frame:abnormalExit.frame,before:abnormalExit.before,after:abnormalExit.after,abnormal:true,sameRoundReset:!!abnormalExit.sameRoundReset,reason:abnormalExit.reason,pendingAction:this.pending?.decision.output.response??null});
+        void session.endStreamHand?.('abnormal_round_boundary').catch(()=>{});
         return {...abnormalExit,pendingAction:this.pending?.decision.output.response??null,proof:this.passiveCandidate??null};
       }
     }
@@ -549,6 +553,7 @@ export class LiveCycle {
         const q=raw.opponent_hand_constraints;
         if(q?.constraints)raw.opponent_hand_constraints={...q,constraints:q.constraints.filter(c=>c.discard?.seat!==seat||c.discard.river_index!==fix.slot)};
         await this.record({kind:'observed_discard_corrected',frame:raw.id,previous:fix.was,state:fix.state,index:fix.index,slot:fix.slot,historical:!!fix.historical});
+        session.syncStreamState?.('observed_discard_corrected');
       }
     }
     const conflicts=this.riverObservations.conflicts(raw);
@@ -674,6 +679,7 @@ export class LiveCycle {
       const p=this.pending.decision;
       session.requests=[...p.input.requests];session.responses=[...p.input.responses,'PASS'];
       session.ledger=structuredClone(p.ledger);session.pending=null;this.pending=null;
+      session.syncStreamState?.('pon_watch_recovery');
       this.publicFrame=this.ponWatch.before;this.opening=null;this.snapshotEvent=null;this.consumed=[];
     }
     if(this.pending){
@@ -1228,7 +1234,7 @@ export class LiveCycle {
     }catch(error){
       // No mouse input has been issued. Retrying a failed calculation must
       // not append the same observed public prefix again.
-      if(!session.pending)Object.assign(session,checkpoint);
+      if(!session.pending){Object.assign(session,checkpoint);session.syncStreamState?.('decision_error_rollback',{ponder:false});}
       if(error.name==='AbortError'||this.signal?.aborted)return {status:'stopped',pending:!!(this.pending||this.special)};
       if(error.code==='AUTO_KITA_PENDING')return this.waitForAutomaticNorth(frame,span.reuseObserved?[]:remaining);
       if(error.code==='BOT_INVALID_RESULT'){

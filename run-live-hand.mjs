@@ -16,6 +16,7 @@ import {NativeCapture} from './native-capture.mjs';
 import {ContinuousCapture} from './continuous-capture.mjs';
 import {ClientAdapter} from './client-adapter.mjs';
 import {TingfengSession} from './bridge.mjs';
+import {PersistentEnginePool} from './engine-exchange.mjs';
 import {LiveCycle} from './live-cycle.mjs';
 import {verifyDiscard} from './discard-verification.mjs';
 import {roundIdentity,AbnormalBoundaryTracker} from './round-boundary.mjs';
@@ -31,7 +32,7 @@ import {snapshotRecovery} from './snapshot-recovery.mjs';
 import {acquireStart} from './acquire-start.mjs';
 import {holdDecisionFocus} from './decision-focus.mjs';
 import {SearchBudget} from './search-budget.mjs';
-import {WindowsNotifier,formatRoundLabel,formatSettlementSummary} from './windows-notify.mjs';
+import {WindowsNotifier,formatRoundLabel,parseWinScreenshotInfo,mergeOwnWinInfo,extractMatchResultInfo} from './windows-notify.mjs';
 
 const ROOT=dirname(fileURLToPath(import.meta.url));
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
@@ -88,6 +89,8 @@ export async function runLiveHand(config){
  const lockPath=join(GAME.runtimeRoot??ROOT,'queue','live-run.lock');await mkdir(dirname(lockPath),{recursive:true});
  const lock=await acquireProcessLock(lockPath,JSON.stringify({pid:process.pid,directory,startedAt:new Date().toISOString()}));
  let capture=config.runtime?.capture,recorder,adapter=config.runtime?.adapter,session,pump,originalInspect,matchEnded=false,roundReset=false;
+ const sharedEnginePool=config.runtime?.enginePool??new PersistentEnginePool();
+ const ownsEnginePool=!config.runtime?.enginePool;
  let decisionFocus=null,focusedNotice=null;
  async function releaseDecisionFocus(){
   const held=decisionFocus;decisionFocus=null;
@@ -104,8 +107,25 @@ export async function runLiveHand(config){
   await decisionFocus.ready;
  }
  const settlements=continuing?.settlements??new SettlementCollector();
+ let handWinInfo=null,lastObservedRemaining=null;
  const notifier=config.runtime?.notifier??config.notifier??new WindowsNotifier();
  notifier.setWindow(config.window);
+ const observeWinAndMatch=frame=>{
+  const page=frame?.result_page;
+  if(page?.kind==='own-win-settlement')handWinInfo=mergeOwnWinInfo(handWinInfo,page);
+  if(typeof page?.screenshot==='string'){
+   const winParsed=parseWinScreenshotInfo(page.screenshot);
+   if(winParsed)handWinInfo=mergeOwnWinInfo(handWinInfo,winParsed);
+  }
+  for(const p of page?.additional_screenshots??[]){
+   const winParsed=parseWinScreenshotInfo(p);
+   if(winParsed)handWinInfo=mergeOwnWinInfo(handWinInfo,winParsed);
+  }
+  const rem=frame?.round?.remaining?.value;
+  if(Number.isInteger(rem))lastObservedRemaining=rem;
+  const matchResult=extractMatchResultInfo(frame);
+  if(matchResult)notifier.notifyMatchEnded({matchResult,frame});
+ };
  const status={pid:process.pid,startedAt:new Date().toISOString(),status:'initializing',actions:0};
  async function save(extra={}){
   Object.assign(status,extra,{updatedAt:new Date().toISOString()});
@@ -122,7 +142,13 @@ export async function runLiveHand(config){
   adapter.onModalStatus=message=>terminal.line(message);
   adapter.onRecognitionStatus=message=>terminal.line(message,false,'recovery');
   adapter.onCallWaitDetected=event=>terminal.callWaitConfirmed(event);
-  adapter.onSavedScreenshot=message=>terminal.line(message,false,'result');
+  adapter.onSavedScreenshot=message=>{
+   const winParsed=parseWinScreenshotInfo(message);
+   if(winParsed)handWinInfo=mergeOwnWinInfo(handWinInfo,winParsed);
+   const matchParsed=extractMatchResultInfo(message);
+   if(matchParsed)notifier.notifyMatchEnded({matchResult:matchParsed,frame:adapter?.latest??null});
+   terminal.line(message,false,'result');
+  };
   if((!continuing&&!config.runtime?.adapter)||!adapter.searchBudget)adapter.searchBudget=SearchBudget.forEngine(status.engine);
   const scoreRetry=continuing?.scoreRetry??new OpeningScoreRetry();
   originalInspect=adapter.inspect;
@@ -153,6 +179,7 @@ export async function runLiveHand(config){
    terminal.callWaitPending=adapter.callWaitEvidence.pending;
    terminal.observe(frame,waitHistory(session),{deferDraw:true});
    for(const message of adapter.searchBudget.drain())terminal.budgetNotice(message);
+   observeWinAndMatch(frame);
    // Observe all phases, including pending discard, own win and call animations.
    // An intervening non-overlay frame must not erase an already stable result.
    settlements.observe(frame,config.seats);
@@ -164,7 +191,10 @@ export async function runLiveHand(config){
     notifier.notifyHandEnded({
      roundKey,
      roundLabel:formatRoundLabel(ctx,config.wind??0),
-     summary:'本局结算：'+formatSettlementSummary(finalScores,ctx),
+     result:finalScores,
+     context:ctx,
+     ownWin:handWinInfo,
+     remaining:lastObservedRemaining,
      frame,
     });
    }
@@ -202,7 +232,7 @@ export async function runLiveHand(config){
   }
   if(!continuing&&config.context)adapter.initializePoints(config.context.scores,config.context.riichi_sticks,config.seats);
   while(true){
-  session=continuing?.session??new TingfengSession(config.executable,join(directory,handsCompleted?`session-${handsCompleted+1}`:'session'));
+  session=continuing?.session??new TingfengSession(config.executable,join(directory,handsCompleted?`session-${handsCompleted+1}`:'session'),{enginePool:sharedEnginePool});
   session.kokushiRoute=kokushiRoute;
   session.verifiedBudgetEngine=status.engine;
   session.searchBudget=adapter.searchBudget;
@@ -342,14 +372,18 @@ export async function runLiveHand(config){
    roundReset=true;return resetResult;
   }
   if(result.status==='round_boundary'||result.status==='hand_ended'){
-   const ctx=session?.context??config.context;
-   const roundKey=JSON.stringify([config.seats,ctx?.hand_index,ctx?.honba]);
-   notifier.notifyHandEnded({
-    roundKey,
-    roundLabel:formatRoundLabel(ctx,config.wind??0),
-    summary:result.sameRoundReset?'途中流局/同局重开':'本局已结束，准备进入下一局',
-    frame:adapter?.latest??pump?.rawFrame??null,
-   });
+   await sharedEnginePool.resetSession({reason:result.status});
+   if(result.sameRoundReset){
+    const ctx=session?.context??config.context;
+    const roundKey=JSON.stringify([config.seats,ctx?.hand_index,ctx?.honba]);
+    notifier.notifyHandEnded({
+     roundKey,
+     roundLabel:formatRoundLabel(ctx,config.wind??0),
+     sameRoundReset:true,
+     summary:'途中流局/同局重开',
+     frame:adapter?.latest??pump?.rawFrame??null,
+    });
+   }
    handContinuity?.clear();
    handsCompleted++;
    await save({status:'recovering_current_table',lastResult:result,handsCompleted});
@@ -403,13 +437,34 @@ export async function runLiveHand(config){
       throw Error('Stable settlement candidate required');
      }
      opening=nextOpening(config,proof,next,{allowSnapshot:true,allowSameRound});
-     terminal.settlement(proof,session.context??config.context,JSON.stringify([config.seats,config.context.hand_index,config.context.honba]));
+     const settleCtx=session.context??config.context;
+     const settleKey=JSON.stringify([config.seats,config.context.hand_index,config.context.honba]);
+     terminal.settlement(proof,settleCtx,settleKey);
+     notifier.notifyHandEnded({
+      roundKey:settleKey,
+      roundLabel:formatRoundLabel(settleCtx,config.wind??0),
+      result:proof,
+      context:settleCtx,
+      ownWin:handWinInfo,
+      remaining:lastObservedRemaining,
+      sameRoundReset:allowSameRound,
+      frame:next,
+     });
      await save({verifiedSettlement:proof});break;
     }catch(openingError){
      try{
       if(settledScores()||tableProof)throw openingError;
       opening=estimatedNextOpening({...config,context:session.context??config.context},next,{allowSameRound});
       terminal.line('结算点数漏读：暂用估计点数继续下一局，等待后续结算校正');
+      const fallbackCtx=session.context??config.context;
+      notifier.notifyHandEnded({
+       roundKey:JSON.stringify([config.seats,config.context.hand_index,config.context.honba]),
+       roundLabel:formatRoundLabel(fallbackCtx,config.wind??0),
+       ownWin:handWinInfo,
+       sameRoundReset:allowSameRound,
+       summary:'结算点数漏读，已进入下一局',
+       frame:next,
+      });
       await save({estimatedSettlement:opening.context});break;
      }catch(fallbackError){
       // A transient deal or an opponent's turn is normal waiting. If a
@@ -434,6 +489,7 @@ export async function runLiveHand(config){
     await writeFile(join(directory,`opening-${handsCompleted+1}.json`),JSON.stringify(opening,null,2),'utf8');
     config={...config,...opening};delete config.resume;
     settlements.reset();
+    handWinInfo=null;lastObservedRemaining=null;
     adapter.points=null;adapter.initializePoints(opening.context.scores,opening.context.riichi_sticks,opening.seats);
     adapter.call=null;adapter.publicFrameId=null;
     await save({status:'running',automaticOpening:opening.context.source,pending:null});
@@ -459,6 +515,8 @@ export async function runLiveHand(config){
   try{await cleanupRuntime([
    releaseDecisionFocus,
    ()=>{if(matchEnded||roundReset||!handContinuity?.state||config.signal?.aborted)session?.pending?.callSearch?.cancel();},
+   ()=>{if(config.signal?.aborted||ownsEnginePool)return sharedEnginePool.closeAll({force:!!config.signal?.aborted});
+        if(matchEnded||roundReset)return sharedEnginePool.resetSession({reason:matchEnded?'match_ended':'round_reset'});},
    ()=>writeFile(join(directory,'checkpoint.json'),JSON.stringify({session,pending:pump?.pending,special:pump?.special,win:pump?.win,points:adapter?.points,lastFrame:adapter?.latest},checkpointReplacer,2),'utf8'),
    ()=>recorder?.stop(),()=>{if(!handBack)return adapter?.close();},()=>{if(!handBack)return capture?.close();},
    ()=>flushEvidence(),()=>lock.close(),()=>unlink(lockPath)

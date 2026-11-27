@@ -31,8 +31,8 @@ test('all local JS imports in the distribution exist and stay within repository'
  }
 });
 
-test('default engine is v105 and v13 CLI arguments work as expected',()=>{
- assert.match(DEFAULT_EXECUTABLE,/v105-5p5/);
+test('default engine is v111 and v15 CLI arguments work as expected',()=>{
+ assert.match(DEFAULT_EXECUTABLE,/v111-5p5/);
  assert.equal(parseResidentArgs(['-b']).briefPostMatch,true);
  assert.equal(parseResidentArgs(['-g']).goldRoom,true);
  assert.equal(parseResidentArgs(['-t']).jadeRoom,true);
@@ -57,16 +57,16 @@ test('required calibrated digit templates are shipped separately from logs',asyn
   await access(join(root,'templates/digits',name));
 });
 
-test('release manifest pins v105 & v15 engines and verified runtime helpers',async()=>{
+test('release manifest pins v111 & v21 engines and verified runtime helpers',async()=>{
  const manifest=JSON.parse(await readFile(join(root,'release-manifest.json'),'utf8'));
  const pins=JSON.parse(await readFile(join(root,'engine-pins.json'),'utf8'));
- assert.equal(manifest.controller,'v13');
+ assert.equal(manifest.controller,'v15');
  assert.equal(manifest.recognize,'v7');
  assert.equal(manifest.execute,'v4');
- assert.equal(JSON.parse(await readFile(join(root,'package.json'),'utf8')).version,'13.0.0');
+ assert.equal(JSON.parse(await readFile(join(root,'package.json'),'utf8')).version,'15.0.0');
  assert.equal(manifest.engines.length,6);
  for(const entry of manifest.engines){
-  const releaseKey=entry.players===3?'v15':'v105';
+  const releaseKey=entry.players===3?'v21':'v111';
   assert.equal(entry.sha256,pins[releaseKey][entry.profile]);
  }
  assert.equal(manifest.pointer.length,2);

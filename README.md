@@ -1,8 +1,8 @@
-# Mahjong Soul Controller (Tingfeng v13)
+# Mahjong Soul Controller (Tingfeng v15)
 
-Automated visual recognition and input controller for the Windows Steam client of Mahjong Soul (`recognize v7`, `execute v4`). It observes visible table state, maintains public event and hand ledgers incrementally, filters legal actions according to game rules, queries the decision engine, and executes and verifies actions. Supports both 4-player (Yonma) and 3-player (Sanma) tables, two-stage call/discard, first-open call reason reporting, optional call-wait inference, automatic win after Riichi, automatic Kita in Sanma, silent background UI activation, `Ctrl+S` stop-after-match toggle, Windows toast notifications, and post-match auto-rematch flows.
+Automated visual recognition and input controller for the Windows Steam client of Mahjong Soul (`recognize v7`, `execute v4`). It observes visible table state, maintains public event and hand ledgers incrementally, filters legal actions according to game rules, queries persistent streaming decision engines with cross-decision caching and interruptible pondering, and executes and verifies actions fully in the background. Supports both 4-player (Yonma) and 3-player (Sanma) tables, two-stage call/discard, first-open call reason reporting, optional call-wait inference, automatic win after Riichi, automatic Kita in Sanma, silent background UI activation, `Ctrl+S` stop-after-match toggle, Windows toast notifications, and post-match auto-rematch flows.
 
-4-player matches use **Tingfeng v105** and 3-player matches use **Tingyuan v15**, each with 5.5s / 3.5s / 2.2s time budgets. **This repository contains no engine source code and no engine binaries.** Prebuilt Windows x64 engine binaries are distributed via [GitHub Releases](https://github.com/czhovo/mahjong-soul/releases) and are downloaded and SHA-256 verified automatically by `setup.ps1`. `wgc-capture.cpp` provides the Windows Graphics Capture implementation for the controller.
+4-player matches use **Tingfeng v111** and 3-player matches use **Tingyuan v21**, each with 5.5s / 3.5s / 2.2s time budgets. **This repository contains no engine source code and no engine binaries.** Prebuilt Windows x64 engine binaries are distributed via [GitHub Releases](https://github.com/czhovo/mahjong-soul/releases) and are downloaded and SHA-256 verified automatically by `setup.ps1`. `wgc-capture.cpp` provides the Windows Graphics Capture implementation for the controller.
 
 Nickname matching is built in using runtime in-memory glyph capture from the lobby or table; no personal nickname templates, personal screenshots, or startup calibration fixtures are included in this repository.
 
@@ -14,10 +14,10 @@ Requirements: Windows 10 1903+, Node.js 22+, Windows x64 Python 3.12, and the St
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-For offline or manual engine installation, download `mahjong-soul-engines-v105-v15-windows-x64.zip` from [Releases](https://github.com/czhovo/mahjong-soul/releases) and pass `-EngineZip`:
+For offline or manual engine installation, download `mahjong-soul-engines-v111-v21-windows-x64.zip` from [Releases](https://github.com/czhovo/mahjong-soul/releases) and pass `-EngineZip`:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\setup.ps1 -EngineZip .\mahjong-soul-engines-v105-v15-windows-x64.zip
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -EngineZip .\mahjong-soul-engines-v111-v21-windows-x64.zip
 ```
 
 Generate and install the coded tile skin from your local game files, then start the controller:
@@ -36,9 +36,9 @@ node resident.mjs -g
 - `--naku`: Enable opponent call-wait inference (disabled by default).
 - `Ctrl+S` (while running): Toggle stop-after-match so the controller exits cleanly after the current match finishes.
 
-## Capture and Execution
+## Capture, Caching, and Background Execution
 
-Frames are captured via Windows Graphics Capture (WGC) bound to the game window handle (HWND), unaffected by window movement or occlusion, and passed as raw pixels over shared memory. `execute v4` delivers client-coordinate clicks through a persistent AutoHotkey v2 stdin/stdout pipe with silent background UI activation and virtual-pointer delivery without disturbing the user's active window or physical cursor.
+Frames are captured via Windows Graphics Capture (WGC) bound to the game window handle (HWND), unaffected by window movement or occlusion, and passed as raw pixels over shared memory. `execute v4` delivers client-coordinate clicks through a persistent AutoHotkey v2 stdin/stdout pipe with silent background UI activation and virtual-pointer delivery for full background operation without disturbing the user's active window or physical cursor. The controller keeps a persistent streaming engine session per hand with cross-decision exact caching and interruptible pondering, clearing all cross-turn caches cleanly at hand boundaries.
 
 ## References
 

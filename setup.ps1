@@ -79,4 +79,4 @@ New-Item -ItemType Directory -Force -Path (Split-Path $captureTarget) | Out-Null
 Copy-Item -LiteralPath $captureSource -Destination $captureTarget -Force
 Verify-Hash $captureTarget $manifest.capture.sha256
 
-Write-Host "Setup complete (Tingfeng v105 & Tingyuan v15 x64 engines). Run node resident.mjs -g, or node resident.mjs -3 -f."
+Write-Host "Setup complete (Tingfeng v111 & Tingyuan v21 x64 engines). Run node resident.mjs -g, or node resident.mjs -3 -f."
